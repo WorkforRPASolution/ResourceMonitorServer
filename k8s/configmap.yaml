@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: resource-monitor-config
+  labels:
+    app: resource-monitor-server
+data:
+  # ----- Elasticsearch (운영 7.11.x) -----
+  MONITOR_ES_HOSTS: "http://elasticsearch.observability:9200"
+  MONITOR_ES_USERNAME: "elastic"
+  MONITOR_ES_USE_SSL: "false"
+  MONITOR_ES_REQUEST_TIMEOUT: "30"
+  MONITOR_ES_MAX_RETRIES: "3"
+
+  # ----- MongoDB (EARS DB) -----
+  # URI는 Secret에서 주입 (자격증명 포함)
+  MONITOR_MONGO_DB: "EARS"
+
+  # ----- Zookeeper 3.5.5 -----
+  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper:2181,zookeeper-1.zookeeper:2181,zookeeper-2.zookeeper:2181"
+  MONITOR_ZK_ROOT_PATH: "/resource-monitor"
+  MONITOR_ZK_SESSION_TIMEOUT: "30"
+  # SASL 미사용 시 빈 값 (Secret이 빈 mechanism을 주입)
+
+  # ----- Redis 5.0.6 -----
+  # DB 격리:
+  #   DB 0  = WebManager
+  #   DB 5  = ResourceMonitorServer (이 서비스)
+  #   DB 10 = socks-agent / direct-agent (docker-compose)
+  #   DB 15 = RMS integration/e2e 테스트 (localhost only)
+  # prefix 'RESOURCE_ALERT:' 는 belt-and-suspenders 이중 가드
+  MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
+  MONITOR_REDIS_KEY_PREFIX: "RESOURCE_ALERT"
+
+  # ----- Email API (Akka HttpWebServer) -----
+  MONITOR_EMAIL_API_URL: "http://httpwebserver.notification:8080/EmailNotify"
+  MONITOR_EMAIL_API_TIMEOUT: "10"
+
+  # ----- Grafana (alert body 링크용) -----
+  MONITOR_GRAFANA_BASE_URL: "https://grafana.factory.local"
+  MONITOR_GRAFANA_DASHBOARD_UID: ""
+
+  # ----- Scheduler / instance -----
+  MONITOR_SCHEDULER_MISFIRE_GRACE_TIME: "60"
+  MONITOR_LOCAL_TZ: "Asia/Seoul"
+
+  # ----- Logging -----
+  MONITOR_LOG_LEVEL: "INFO"
+  MONITOR_LOG_FORMAT: "json"
+
+  # ----------------------------------------------------------------------
+  # ⚠️ DO NOT SET MONITOR_DEBUG_READ_ONLY IN PRODUCTION
+  #
+  # MONITOR_DEBUG_READ_ONLY=true causes the service to skip:
+  #   - init_repos create_index
+  #   - seed_default_profile
+  #   - init_distributed (ZK 참여 없음)
+  #   - leader_election, partition_manager
+  #   - email send_alert (로그만)
+  #   - Redis cooldown writes
+  # Scheduler still starts, BUT with no distributed coordination — which
+  # means analysis jobs run without leader/partition, potentially zero
+  # processes are analyzed, and a blind-spot develops. This flag is for
+  # developer debugging only. See ARCHITECTURE.md §9 / CONTRIBUTING.md §8.4
+  # for full details.
+  #
+  # There must be NO MONITOR_DEBUG_READ_ONLY key in this ConfigMap.
+  # ----------------------------------------------------------------------

@@ -1,0 +1,52 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Test artifacts
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# Tests are not needed in the runtime image (CI runs them separately)
+tests/
+
+# Docs / planning
+docs/
+*.md
+PRD_*.md
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# VCS
+.git/
+.gitignore
+
+# K8s manifests are deployed separately, not embedded in the image
+k8s/
+
+# Docker itself
+Dockerfile
+.dockerignore
+
+# Plan / scratch
+.claude/

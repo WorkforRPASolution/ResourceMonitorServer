@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+coverage.xml
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env files — only .env.example is tracked
+.env
+.env.local
+.env.*.local
+.env.test
+.env.production
+!.env.example
+
+# K8s secrets — only the .example template is tracked
+k8s/secret.yaml
+k8s/secrets.yaml
+
+# Logs
+*.log
+logs/
+
+# Ruff
+.ruff_cache/
+
+# Mypy
+.mypy_cache/

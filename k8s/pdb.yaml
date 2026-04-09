@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: resource-monitor-pdb
+  labels:
+    app: resource-monitor-server
+spec:
+  # Phase 0 단일 인스턴스 보호. 노드 drain 시 PreStop이 끝날 때까지 evict 차단.
+  # Phase 1+ 멀티 인스턴스로 가면 minAvailable: 1 또는 maxUnavailable: 1로 변경.
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: resource-monitor-server

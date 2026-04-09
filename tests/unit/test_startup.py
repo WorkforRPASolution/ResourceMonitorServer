@@ -1,0 +1,234 @@
+"""Tests for src.startup.* (lifespan decomposition)."""
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.config.constants import COLL_PROFILE
+from src.config.settings import AppSettings
+from src.startup.infra import InfraContext, init_infra
+from src.startup.repos import init_repos
+
+
+@pytest.fixture
+def settings() -> AppSettings:
+    return AppSettings()
+
+
+@pytest.mark.unit
+class TestInfraContextClosePartial:
+    async def test_close_partial_runs_in_reverse_order(self):
+        ctx = InfraContext()
+        # Set all clients with AsyncMock close()
+        ctx.es = MagicMock()
+        ctx.es.close = AsyncMock()
+        ctx.mongo = MagicMock()
+        ctx.mongo.close = AsyncMock()
+        ctx.redis = MagicMock()
+        ctx.redis.close = AsyncMock()
+        ctx.email = MagicMock()
+        ctx.email.close = AsyncMock()
+        ctx.zk = MagicMock()
+        ctx.zk.close = AsyncMock()
+
+        await ctx.close_partial()
+
+        ctx.es.close.assert_awaited_once()
+        ctx.mongo.close.assert_awaited_once()
+        ctx.redis.close.assert_awaited_once()
+        ctx.email.close.assert_awaited_once()
+        ctx.zk.close.assert_awaited_once()
+
+    async def test_close_partial_swallows_individual_failures(self):
+        """A failure closing one client must NOT prevent the others from closing."""
+        ctx = InfraContext()
+        ctx.es = MagicMock()
+        ctx.es.close = AsyncMock()
+        ctx.mongo = MagicMock()
+        ctx.mongo.close = AsyncMock(side_effect=ConnectionError("oops"))
+        ctx.redis = MagicMock()
+        ctx.redis.close = AsyncMock()
+
+        # Must NOT raise
+        await ctx.close_partial()
+        ctx.es.close.assert_awaited_once()
+        ctx.redis.close.assert_awaited_once()
+
+    async def test_close_partial_skips_none(self):
+        ctx = InfraContext()
+        # All clients are None
+        await ctx.close_partial()  # must not raise
+
+
+@pytest.mark.unit
+class TestInitInfra:
+    async def test_init_connects_all_clients(self, settings):
+        with (
+            patch("src.startup.infra.ESClient") as MockES,
+            patch("src.startup.infra.MongoClient") as MockMongo,
+            patch("src.startup.infra.RedisClient") as MockRedis,
+            patch("src.startup.infra.EmailAlertClient") as MockEmail,
+            patch("src.startup.infra.ZKClient") as MockZK,
+        ):
+            es_inst = MagicMock(connect=AsyncMock())
+            mongo_inst = MagicMock(connect_with_retry=AsyncMock())
+            redis_inst = MagicMock(connect_with_retry=AsyncMock())
+            email_inst = MagicMock(connect=AsyncMock())
+            zk_inst = MagicMock(connect=AsyncMock())
+            MockES.return_value = es_inst
+            MockMongo.return_value = mongo_inst
+            MockRedis.return_value = redis_inst
+            MockEmail.return_value = email_inst
+            MockZK.return_value = zk_inst
+
+            ctx = await init_infra(settings)
+
+        assert ctx.es is es_inst
+        assert ctx.mongo is mongo_inst
+        assert ctx.redis is redis_inst
+        assert ctx.email is email_inst
+        assert ctx.zk is zk_inst
+        es_inst.connect.assert_awaited_once()
+        mongo_inst.connect_with_retry.assert_awaited_once()
+        redis_inst.connect_with_retry.assert_awaited_once()
+        email_inst.connect.assert_awaited_once()
+        zk_inst.connect.assert_awaited_once()
+
+    async def test_init_cleans_up_on_failure(self, settings):
+        """If ZK connect fails AFTER ES/Mongo connected, the partial state must be released."""
+        with (
+            patch("src.startup.infra.ESClient") as MockES,
+            patch("src.startup.infra.MongoClient") as MockMongo,
+            patch("src.startup.infra.RedisClient") as MockRedis,
+            patch("src.startup.infra.EmailAlertClient") as MockEmail,
+            patch("src.startup.infra.ZKClient") as MockZK,
+        ):
+            es_inst = MagicMock(connect=AsyncMock(), close=AsyncMock())
+            mongo_inst = MagicMock(
+                connect_with_retry=AsyncMock(), close=AsyncMock()
+            )
+            redis_inst = MagicMock(
+                connect_with_retry=AsyncMock(), close=AsyncMock()
+            )
+            email_inst = MagicMock(connect=AsyncMock(), close=AsyncMock())
+            zk_inst = MagicMock(
+                connect=AsyncMock(side_effect=ConnectionError("ZK down")),
+                close=AsyncMock(),
+            )
+            MockES.return_value = es_inst
+            MockMongo.return_value = mongo_inst
+            MockRedis.return_value = redis_inst
+            MockEmail.return_value = email_inst
+            MockZK.return_value = zk_inst
+
+            with pytest.raises(ConnectionError):
+                await init_infra(settings)
+
+            # ES/Mongo/Redis/Email all connected; close must be called on each
+            es_inst.close.assert_awaited_once()
+            mongo_inst.close.assert_awaited_once()
+            redis_inst.close.assert_awaited_once()
+            email_inst.close.assert_awaited_once()
+
+    async def test_init_infra_skips_zk_in_debug_mode(self):
+        """★ Debug Read-Only mode: ZK must NOT be connected. A debug
+        instance registering as a ZK member would pollute the production
+        cluster's membership and trigger spurious redistributions."""
+        debug_settings = AppSettings(debug_read_only=True)
+        with (
+            patch("src.startup.infra.ESClient") as MockES,
+            patch("src.startup.infra.MongoClient") as MockMongo,
+            patch("src.startup.infra.RedisClient") as MockRedis,
+            patch("src.startup.infra.EmailAlertClient") as MockEmail,
+            patch("src.startup.infra.ZKClient") as MockZK,
+        ):
+            MockES.return_value = MagicMock(connect=AsyncMock())
+            MockMongo.return_value = MagicMock(connect_with_retry=AsyncMock())
+            MockRedis.return_value = MagicMock(connect_with_retry=AsyncMock())
+            MockEmail.return_value = MagicMock(connect=AsyncMock())
+
+            ctx = await init_infra(debug_settings)
+
+            # ZK not even constructed
+            MockZK.assert_not_called()
+        assert ctx.zk is None
+        # Others still connected — debug instance can read Mongo/ES and
+        # talk to the email API (though send_alert is no-op'd separately)
+        assert ctx.es is not None
+        assert ctx.mongo is not None
+        assert ctx.redis is not None
+        assert ctx.email is not None
+
+
+@pytest.mark.unit
+class TestInitRepos:
+    """Verify init_repos builds repositories and ensures the schema invariants.
+
+    Phase 0 gap fix: PROFILE must have a unique index on (scope.process,
+    scope.eqpModel, scope.eqpId) or ProfileRepository.create()'s
+    DuplicateKeyError path cannot fire.
+    """
+
+    def _make_infra(self) -> InfraContext:
+        """Build an InfraContext with a mocked motor-style db."""
+        ctx = InfraContext()
+        ctx.mongo = MagicMock()
+        # motor db is subscriptable: db[COLL] → AsyncMock collection
+        collections: dict = {}
+
+        def _getitem(name: str):
+            if name not in collections:
+                coll = MagicMock()
+                coll.create_index = AsyncMock()
+                collections[name] = coll
+            return collections[name]
+
+        ctx.mongo.db = MagicMock()
+        ctx.mongo.db.__getitem__.side_effect = _getitem
+        ctx.mongo.db._collections = collections  # test introspection
+        return ctx
+
+    async def test_init_repos_returns_both_repositories(self, settings):
+        ctx = self._make_infra()
+        repos = await init_repos(ctx, settings)
+        assert repos.profile_repo is not None
+        assert repos.eqp_info_repo is not None
+
+    async def test_init_repos_creates_unique_scope_index_on_profile(self, settings):
+        """★ Regression guard for Phase 0 schema gap:
+        init_repos() must call create_index on RESOURCE_MONITOR_PROFILE
+        with unique=True on the three scope fields."""
+        ctx = self._make_infra()
+        await init_repos(ctx, settings)
+
+        profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
+        profile_coll.create_index.assert_awaited_once()
+        args, kwargs = profile_coll.create_index.call_args
+        # First positional arg: the index key list
+        key_spec = args[0]
+        # Must be a list of (field, direction) tuples covering all three scope fields
+        fields = {field for field, _ in key_spec}
+        assert fields == {"scope.process", "scope.eqpModel", "scope.eqpId"}
+        assert kwargs.get("unique") is True
+        # name is encouraged for idempotent re-runs
+        assert kwargs.get("name") == "uniq_scope"
+
+    async def test_init_repos_raises_if_mongo_not_connected(self, settings):
+        ctx = InfraContext()  # mongo is None
+        with pytest.raises(RuntimeError, match="connected MongoClient"):
+            await init_repos(ctx, settings)
+
+    async def test_init_repos_skips_create_index_in_debug_mode(self):
+        """★ Debug Read-Only mode: create_index must NOT be awaited when
+        debug_read_only=True. Debug instances rely on the production
+        indexes already existing and must not mutate prod schema."""
+        ctx = self._make_infra()
+        debug_settings = AppSettings(debug_read_only=True)
+
+        repos = await init_repos(ctx, debug_settings)
+
+        # Repositories still wired up
+        assert repos.profile_repo is not None
+        assert repos.eqp_info_repo is not None
+        # But create_index NOT called
+        profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
+        profile_coll.create_index.assert_not_awaited()

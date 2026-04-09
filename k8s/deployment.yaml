@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-monitor-server
+  labels:
+    app: resource-monitor-server
+spec:
+  # Phase 0: 단일 인스턴스. Phase 1+에서 멀티 인스턴스 페일오버 검증 후 증가.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: resource-monitor-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # PDB(maxUnavailable=0)와 짝. 새 pod ready 후 옛 pod 정리.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: resource-monitor-server
+    spec:
+      # PreStop sleep 5s + scheduler graceful shutdown 30s + 여유 25s
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: monitoring
+          image: resource-monitor-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: resource-monitor-config
+            - secretRef:
+                name: resource-monitor-secrets
+          env:
+            # 인스턴스 ID는 pod 이름으로 — leader election + partition assignment 키
+            - name: MONITOR_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # ⚠️ MONITOR_DEBUG_READ_ONLY 는 여기에 절대 설정하지 말 것.
+            # 개발 PC 전용 플래그이며, prod 에서 켜지면 분산 조정이 비활성화되어
+            # 감지 공백이 발생한다. ARCHITECTURE.md §9 참고.
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              # 20K 장비 bucket aggregation 대응 (PRD §13)
+              memory: "1Gi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # readOnlyRootFilesystem이라 임시 파일용
+            - name: tmp
+              mountPath: /tmp
+          # liveness는 인프라 무관. 죽은 프로세스 감지만.
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            initialDelaySeconds: 60   # ZK 세션 + seed + watch 등록 여유
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # readiness는 5개 인프라 ping. 일시 장애 시 트래픽 차단만, 재시작 X.
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6       # ~60s 동안 계속 실패해야 not-ready
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                # iptables 전파 + endpoint 제거 시간 확보
+                command: ["sh", "-c", "sleep 5"]
+      volumes:
+        - name: tmp
+          emptyDir: {}

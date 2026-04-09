@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-monitor-server
+  labels:
+    app: resource-monitor-server
+spec:
+  type: ClusterIP
+  selector:
+    app: resource-monitor-server
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
