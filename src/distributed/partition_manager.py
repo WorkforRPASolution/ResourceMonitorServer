@@ -29,7 +29,7 @@ from collections.abc import Callable
 from typing import Any
 
 import structlog
-from kazoo.exceptions import NoNodeError, NodeExistsError
+from kazoo.exceptions import NodeExistsError, NoNodeError
 from kazoo.protocol.states import KazooState
 from kazoo.recipe.watchers import ChildrenWatch, DataWatch
 
@@ -512,7 +512,7 @@ class PartitionManager:
         self._assigned_processes = processes
         scheduler = self._get_scheduler()
         if scheduler is not None:
-            await scheduler.reload()
+            await scheduler.reload(processes)
 
     async def _refresh_assignment_from_zk(self) -> None:
         try:

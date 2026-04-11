@@ -9,11 +9,8 @@ unit test는 AsyncMock으로 Redis client를 mock했기 때문에:
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from pydantic import SecretStr
-from redis.asyncio import Redis
 
 from src.cache.cooldown import AlertCooldownManager
 from src.cache.redis_client import RedisClient

@@ -114,7 +114,7 @@ class ZKClient:
                 await asyncio.wait_for(
                     asyncio.wrap_future(future), timeout=budget_sec
                 )
-            except asyncio.TimeoutError as e:
+            except TimeoutError as e:
                 elapsed = time.monotonic() - wall_start
                 logger.error(
                     "zk_startup_timeout",
@@ -228,7 +228,7 @@ class ZKClient:
             for line in text.split("\n"):
                 if line.startswith("Zookeeper version:"):
                     return line.split(":", 1)[1].strip()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("zk_stat_command_timeout")
         except Exception as e:
             # ConnectionResetError = 4lw whitelist blocks the command

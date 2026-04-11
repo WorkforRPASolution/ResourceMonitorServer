@@ -37,7 +37,7 @@ async def _safe_check(coro: Awaitable[Any], timeout: float = _CHECK_TIMEOUT_SEC)
     except asyncio.CancelledError:
         # Honor cooperative cancellation — do NOT swallow this
         raise
-    except (TimeoutError, asyncio.TimeoutError):
+    except TimeoutError:
         return False
     except Exception:
         return False

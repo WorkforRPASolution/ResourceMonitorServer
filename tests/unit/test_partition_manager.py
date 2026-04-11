@@ -144,6 +144,18 @@ class TestApplyAssignmentStaleDefense:
         )
         assert pm.get_my_processes() == ["A"]
 
+    async def test_apply_assignment_calls_reload_with_processes(
+        self, mock_zk, mock_leader, mock_eqp_repo
+    ):
+        """Phase 1: reload() must receive the assigned processes list."""
+        scheduler = MagicMock()
+        scheduler.reload = AsyncMock()
+        pm = _make_pm(mock_zk, mock_leader, mock_eqp_repo, scheduler=scheduler)
+        await pm._apply_assignment(
+            {"processes": ["CVD", "ETCH"], "leader_epoch": 1, "assigned_at": 100.0}
+        )
+        scheduler.reload.assert_awaited_once_with(["CVD", "ETCH"])
+
 
 # ----------------------------------------------------------------------
 # DataWatch empty-node guard (v4 fix)

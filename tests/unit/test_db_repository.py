@@ -237,3 +237,63 @@ class TestMongoUnavailableTranslation:
         mock_collection.insert_one.side_effect = DuplicateKeyError("dup")
         with pytest.raises(ProfileAlreadyExistsError):
             await repo.create(_make_profile())
+
+    async def test_get_active_equipment_translates(
+        self, mock_collection, driver_exc
+    ):
+        repo = EqpInfoRepository(mock_collection)
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(side_effect=driver_exc)
+        mock_collection.find = MagicMock(return_value=cursor)
+        with pytest.raises(MongoUnavailableError):
+            await repo.get_active_equipment_by_process("CVD")
+
+
+# ----------------------------------------------------------------------
+# EqpInfoRepository — get_active_equipment_by_process (Phase 1)
+# ----------------------------------------------------------------------
+@pytest.mark.unit
+class TestEqpInfoGetActiveEquipment:
+    @pytest.fixture
+    def mock_coll_with_find(self, mock_collection):
+        """Extend mock_collection with a find() that returns a cursor mock."""
+        cursor = MagicMock()
+        cursor.to_list = AsyncMock(return_value=[])
+        mock_collection.find = MagicMock(return_value=cursor)
+        mock_collection._cursor = cursor  # expose for assertions
+        return mock_collection
+
+    async def test_returns_equipment_list(self, mock_coll_with_find):
+        docs = [
+            {"eqpId": "EQP01", "eqpModel": "MODEL_A", "process": "CVD",
+             "localpc": "PC001", "ipAddr": "10.0.0.1", "line": "L1", "category": "MAIN"},
+            {"eqpId": "EQP02", "eqpModel": "MODEL_B", "process": "CVD",
+             "localpc": "PC002", "ipAddr": "10.0.0.2", "line": "L2", "category": "SUB"},
+        ]
+        mock_coll_with_find._cursor.to_list.return_value = docs
+        repo = EqpInfoRepository(mock_coll_with_find)
+        result = await repo.get_active_equipment_by_process("CVD")
+        assert result == docs
+        assert len(result) == 2
+
+    async def test_applies_active_filter_and_process(self, mock_coll_with_find):
+        repo = EqpInfoRepository(mock_coll_with_find)
+        await repo.get_active_equipment_by_process("ETCH")
+        call_args = mock_coll_with_find.find.call_args
+        filter_arg = call_args[0][0] if call_args[0] else call_args[1].get("filter")
+        assert filter_arg == {"process": "ETCH", "onoff": 1, "webmanagerUse": 1}
+
+    async def test_uses_projection(self, mock_coll_with_find):
+        repo = EqpInfoRepository(mock_coll_with_find)
+        await repo.get_active_equipment_by_process("CVD")
+        call_args = mock_coll_with_find.find.call_args
+        projection = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("projection")
+        # Must include these fields for email payload construction
+        for field in ("eqpId", "eqpModel", "process", "localpc", "ipAddr", "line", "category"):
+            assert field in projection
+
+    async def test_returns_empty_list_when_no_match(self, mock_coll_with_find):
+        mock_coll_with_find._cursor.to_list.return_value = []
+        repo = EqpInfoRepository(mock_coll_with_find)
+        result = await repo.get_active_equipment_by_process("NONEXIST")
+        assert result == []

@@ -183,3 +183,35 @@ class EqpInfoRepository:
             )
         except _MONGO_UNAVAILABLE_EXC as e:
             raise MongoUnavailableError(f"count_active_by_process: {e}") from e
+
+    # Phase 1: bulk fetch for analysis engine (avoids N+1 per-eqpId queries)
+    _EQUIPMENT_PROJECTION = {
+        "_id": 0,
+        "eqpId": 1,
+        "eqpModel": 1,
+        "process": 1,
+        "localpc": 1,
+        "ipAddr": 1,
+        "line": 1,
+        "category": 1,
+    }
+
+    async def get_active_equipment_by_process(
+        self, process: str
+    ) -> list[dict[str, Any]]:
+        """Return all active equipment docs for a process.
+
+        Used by the analysis engine to build an in-memory lookup dict
+        ({eqpId: doc}) at the start of each analysis run, avoiding
+        per-breach MongoDB queries.
+        """
+        try:
+            cursor = self._collection.find(
+                {"process": process, **self._ACTIVE_FILTER},
+                self._EQUIPMENT_PROJECTION,
+            )
+            return await cursor.to_list(None)
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(
+                f"get_active_equipment_by_process: {e}"
+            ) from e

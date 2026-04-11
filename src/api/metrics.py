@@ -26,6 +26,18 @@ ALERTS_SENT = Counter(
     ["code", "subcode"],
 )
 
+THRESHOLD_BREACHES = Counter(
+    "resource_monitor_threshold_breaches_total",
+    "Number of threshold breaches detected",
+    ["process", "metric", "severity"],
+)
+
+ALERTS_SUPPRESSED = Counter(
+    "resource_monitor_alerts_suppressed_by_cooldown_total",
+    "Breaches not alerted due to active cooldown",
+    ["process", "metric", "severity"],
+)
+
 # ----------------------------------------------------------------------
 # Histograms
 # ----------------------------------------------------------------------

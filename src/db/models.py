@@ -11,7 +11,7 @@ field names the rest of the EARS system already expects.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,13 +21,13 @@ from pydantic import BaseModel, ConfigDict, Field
 # Domain exceptions
 # ----------------------------------------------------------------------
 class ProfileAlreadyExistsError(Exception):
-    def __init__(self, scope: "Scope") -> None:
+    def __init__(self, scope: Scope) -> None:
         super().__init__(f"Profile already exists for scope: {scope!r}")
         self.scope = scope
 
 
 class ProfileNotFoundError(Exception):
-    def __init__(self, scope: "Scope") -> None:
+    def __init__(self, scope: Scope) -> None:
         super().__init__(f"Profile not found for scope: {scope!r}")
         self.scope = scope
 
@@ -86,7 +86,7 @@ class Scope(BaseModel):
         }
 
     @classmethod
-    def from_mongo(cls, doc: dict[str, Any]) -> "Scope":
+    def from_mongo(cls, doc: dict[str, Any]) -> Scope:
         return cls(
             process=doc["process"],
             eqp_model=doc.get("eqpModel", "*"),
@@ -144,7 +144,7 @@ class MonitorProfile(BaseModel):
         }
 
     @classmethod
-    def from_mongo(cls, doc: dict[str, Any]) -> "MonitorProfile":
+    def from_mongo(cls, doc: dict[str, Any]) -> MonitorProfile:
         """Deserialize a Mongo document.
 
         `_id` is converted to a hex string and stored on `.id`. `created_at` /
@@ -163,4 +163,4 @@ class MonitorProfile(BaseModel):
 # ----------------------------------------------------------------------
 def utcnow() -> datetime:
     """Timezone-aware UTC now (testable alternative to `datetime.utcnow()`)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

@@ -4,6 +4,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 
 from src.api.metrics import (
     ALERTS_SENT,
+    ALERTS_SUPPRESSED,
     ASSIGNED_PROCESSES,
     ES_QUERY_DURATION,
     INFRA_LABELS,
@@ -11,6 +12,7 @@ from src.api.metrics import (
     JOB_DURATION,
     JOB_TOTAL,
     STARTUP_COMPLETE,
+    THRESHOLD_BREACHES,
     ZK_LEADER,
     render_metrics,
 )
@@ -70,6 +72,30 @@ class TestMetricsRegistry:
         STARTUP_COMPLETE.set(1.0)
         assert STARTUP_COMPLETE._value.get() == 1.0
 
+    def test_threshold_breaches_counter_can_be_incremented(self):
+        before = THRESHOLD_BREACHES.labels(
+            process="CVD", metric="total_used_pct", severity="WARNING"
+        )._value.get()
+        THRESHOLD_BREACHES.labels(
+            process="CVD", metric="total_used_pct", severity="WARNING"
+        ).inc()
+        after = THRESHOLD_BREACHES.labels(
+            process="CVD", metric="total_used_pct", severity="WARNING"
+        )._value.get()
+        assert after == before + 1
+
+    def test_alerts_suppressed_counter_can_be_incremented(self):
+        before = ALERTS_SUPPRESSED.labels(
+            process="CVD", metric="mem_used_pct", severity="CRITICAL"
+        )._value.get()
+        ALERTS_SUPPRESSED.labels(
+            process="CVD", metric="mem_used_pct", severity="CRITICAL"
+        ).inc()
+        after = ALERTS_SUPPRESSED.labels(
+            process="CVD", metric="mem_used_pct", severity="CRITICAL"
+        )._value.get()
+        assert after == before + 1
+
 
 @pytest.mark.unit
 class TestRenderMetrics:
@@ -85,3 +111,5 @@ class TestRenderMetrics:
         assert "resource_monitor_zk_leader" in text
         assert "resource_monitor_infra_up" in text
         assert "resource_monitor_startup_complete" in text
+        assert "resource_monitor_threshold_breaches_total" in text
+        assert "resource_monitor_alerts_suppressed_by_cooldown_total" in text

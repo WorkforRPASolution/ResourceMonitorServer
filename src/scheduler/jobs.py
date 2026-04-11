@@ -70,6 +70,9 @@ class AnalysisScheduler:
         # APScheduler's `running` property does not flip to False reliably on
         # `shutdown(wait=False)` across versions. We track our own state.
         self._running = False
+        # Phase 1: analysis engine — created lazily to allow deps to be
+        # fully wired before first use.
+        self._engine: Any = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -85,16 +88,57 @@ class AnalysisScheduler:
         self._running = True
         logger.info("scheduler_started")
 
-    async def reload(self) -> None:
-        """Re-register jobs after partition reassignment.
+    def _get_engine(self):
+        if self._engine is None:
+            from src.analyzer.engine import AnalysisEngine
 
-        Phase 0 stub — Phase 1 will iterate the assigned processes and
-        register one job per (process, metric_pattern) pair. In debug mode
-        Phase 1 should call ``resolve_processes_for_debug()`` instead of
-        pulling from the partition manager.
+            self._engine = AnalysisEngine(self._deps, self._settings)
+            self._engine._es_semaphore = self._es_semaphore
+        return self._engine
+
+    async def reload(self, processes: list[str] | None = None) -> None:
+        """Re-register analysis jobs after partition reassignment.
+
+        ``processes`` is the list of process names this instance is
+        responsible for. When ``None`` and debug mode is active, falls
+        back to ``resolve_processes_for_debug()``.
         """
         self._scheduler.remove_all_jobs()
-        logger.info("scheduler_reloaded")
+
+        if processes is None:
+            if self._settings.debug_read_only:
+                processes = await self.resolve_processes_for_debug()
+            else:
+                logger.warning("reload_called_without_processes_in_normal_mode")
+                return
+
+        engine = self._get_engine()
+
+        for process in processes:
+            profile = await self._deps.profile_repo.resolve_profile(
+                process, "*", "*"
+            )
+            if profile is None:
+                logger.warning(
+                    "reload_no_profile_for_process", process=process
+                )
+                continue
+            for config in profile.analysis_configs:
+                job_id = f"analysis-{process}-{config.metric_pattern}"
+                self._scheduler.add_job(
+                    self._job_wrapper,
+                    "interval",
+                    minutes=config.schedule.interval_minutes,
+                    args=[engine.run_analysis, process, config],
+                    id=job_id,
+                    replace_existing=True,
+                )
+
+        logger.info(
+            "scheduler_reloaded",
+            processes=processes,
+            job_count=len(self._scheduler.get_jobs()),
+        )
 
     async def resolve_processes_for_debug(self) -> list[str]:
         """Return the list of processes this debug instance should analyze.

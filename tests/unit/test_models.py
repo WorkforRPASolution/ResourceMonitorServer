@@ -1,5 +1,5 @@
 """Tests for src.db.models — Pydantic models + Mongo roundtrip."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from bson import ObjectId
@@ -108,8 +108,8 @@ class TestMonitorProfileRoundtrip:
         p = self._make_profile()
         doc = p.to_mongo()
         doc["_id"] = ObjectId()
-        doc["created_at"] = datetime.now(timezone.utc)
-        doc["updated_at"] = datetime.now(timezone.utc)
+        doc["created_at"] = datetime.now(UTC)
+        doc["updated_at"] = datetime.now(UTC)
         restored = MonitorProfile.from_mongo(doc)
         # id is optional and populated as a string
         assert restored.id is not None

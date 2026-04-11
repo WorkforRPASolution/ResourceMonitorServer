@@ -107,7 +107,7 @@ class LeaderElection:
                 await asyncio.wait_for(
                     asyncio.wrap_future(self._election_future), timeout=5
                 )
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 pass
         self._is_leader = False
         await self._zk.loop.run_in_executor(
@@ -123,7 +123,7 @@ class LeaderElection:
                 await asyncio.wait_for(
                     asyncio.wrap_future(self._election_future), timeout=10
                 )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("leader_election_stop_timeout")
         except Exception:
             pass

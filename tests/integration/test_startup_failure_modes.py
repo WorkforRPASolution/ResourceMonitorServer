@@ -22,7 +22,6 @@ import subprocess
 import time
 import uuid
 
-import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 

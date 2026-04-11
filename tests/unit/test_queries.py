@@ -81,3 +81,87 @@ class TestBuildTimeRangeQuery:
         # gte should be 5 minutes earlier than lte
         assert "11:55" in gte
         assert "12:00" in lte
+
+
+# ----------------------------------------------------------------------
+# Phase 1: build_metric_aggregation_query
+# ----------------------------------------------------------------------
+@pytest.mark.unit
+class TestBuildMetricAggregationQuery:
+    def test_size_is_zero(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=["total_used_pct"]
+        )
+        assert body["size"] == 0
+
+    def test_has_time_range_filter(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=["total_used_pct"]
+        )
+        filters = body["query"]["bool"]["filter"]
+        assert any("range" in f for f in filters)
+
+    def test_terms_on_eqp_id_with_size_30000(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=["total_used_pct"]
+        )
+        by_eqp = body["aggs"]["by_eqp"]
+        assert by_eqp["terms"]["field"] == "eqpId.keyword"
+        assert by_eqp["terms"]["size"] == 30000
+
+    def test_default_agg_type_is_max(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=["total_used_pct"]
+        )
+        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
+        assert "total_used_pct_max" in sub_aggs
+        assert sub_aggs["total_used_pct_max"] == {"max": {"field": "total_used_pct"}}
+
+    def test_custom_agg_types(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10,
+            metric_fields=["required", "forbidden", "total_used_pct"],
+            agg_types={"required": "min", "forbidden": "max", "total_used_pct": "avg"},
+        )
+        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
+        assert sub_aggs["required_min"] == {"min": {"field": "required"}}
+        assert sub_aggs["forbidden_max"] == {"max": {"field": "forbidden"}}
+        assert sub_aggs["total_used_pct_avg"] == {"avg": {"field": "total_used_pct"}}
+
+    def test_multiple_metrics(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=5,
+            metric_fields=["cpu0_core_load", "cpu1_core_load"],
+        )
+        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
+        assert "cpu0_core_load_max" in sub_aggs
+        assert "cpu1_core_load_max" in sub_aggs
+
+    def test_empty_metric_fields_still_valid(self, qb):
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=[]
+        )
+        assert body["size"] == 0
+        assert body["aggs"]["by_eqp"]["aggs"] == {}
+
+    def test_includes_process_filter(self, qb):
+        """ES query must filter by process even though the index is per-process."""
+        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        body = qb.build_metric_aggregation_query(
+            now, window_minutes=10, metric_fields=["total_used_pct"],
+            process="CVD",
+        )
+        filters = body["query"]["bool"]["filter"]
+        process_filters = [
+            f for f in filters
+            if "term" in f and "process.keyword" in f.get("term", {})
+        ]
+        assert len(process_filters) == 1
+        assert process_filters[0]["term"]["process.keyword"] == "CVD"

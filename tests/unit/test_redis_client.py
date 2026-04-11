@@ -1,11 +1,10 @@
 """Tests for src.cache.redis_client (Redis 5.0.6 compat)."""
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.config.settings import AppSettings
 from src.cache.redis_client import RedisClient
+from src.config.settings import AppSettings
 
 
 @pytest.fixture
@@ -140,9 +139,8 @@ class TestRedisConnectWithRetry:
             mock_cls.from_url.return_value = instance
             with patch(
                 "src.cache.redis_client.asyncio.sleep", side_effect=fake_sleep
-            ):
-                with pytest.raises(ConnectionError):
-                    await client.connect_with_retry(max_attempts=3, backoff=1.0)
+            ), pytest.raises(ConnectionError):
+                await client.connect_with_retry(max_attempts=3, backoff=1.0)
         # 3 attempts → 2 sleeps between them: 1×1=1, 1×2=2
         assert sleep_delays == [1.0, 2.0]
 

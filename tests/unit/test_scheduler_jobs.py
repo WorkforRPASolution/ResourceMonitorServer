@@ -224,3 +224,109 @@ class TestDebugProcessesResolution:
 
         with pytest.raises(RuntimeError, match="debug_read_only"):
             await sched.resolve_processes_for_debug()
+
+
+# ----------------------------------------------------------------------
+# Phase 1: reload() job registration
+# ----------------------------------------------------------------------
+@pytest.mark.unit
+class TestSchedulerReload:
+    def _make_deps_with_profile(self):
+        from src.db.models import (
+            AnalysisConfig,
+            MetricSchedule,
+            MonitorProfile,
+            Scope,
+            ThresholdConfig,
+        )
+
+        profile = MonitorProfile(
+            scope=Scope(process="*"),
+            analysis_configs=[
+                AnalysisConfig(
+                    metric_pattern="total_used_pct",
+                    threshold=ThresholdConfig(
+                        warning=80, critical=95, cooldown_minutes=30
+                    ),
+                    schedule=MetricSchedule(interval_minutes=5, window_minutes=10),
+                ),
+                AnalysisConfig(
+                    metric_pattern="*_core_load",
+                    threshold=ThresholdConfig(
+                        warning=85, critical=97, cooldown_minutes=30
+                    ),
+                    schedule=MetricSchedule(interval_minutes=10, window_minutes=15),
+                ),
+            ],
+        )
+        deps = SimpleNamespace(
+            es=MagicMock(),
+            profile_repo=MagicMock(
+                resolve_profile=AsyncMock(return_value=profile)
+            ),
+            eqp_info_repo=MagicMock(),
+            zk_lock=MagicMock(),
+            cooldown_mgr=MagicMock(),
+            email_client=MagicMock(),
+            query_builder=MagicMock(),
+        )
+        return deps
+
+    async def test_reload_registers_jobs_for_processes(self):
+        deps = self._make_deps_with_profile()
+        sched = AnalysisScheduler(
+            AppSettings(scheduler_misfire_grace_time=60), deps
+        )
+        await sched.start()
+        await sched.reload(["CVD", "ETCH"])
+
+        jobs = sched._scheduler.get_jobs()
+        job_ids = {j.id for j in jobs}
+        # 2 processes × 2 analysis_configs = 4 jobs
+        assert len(jobs) == 4
+        assert "analysis-CVD-total_used_pct" in job_ids
+        assert "analysis-CVD-*_core_load" in job_ids
+        assert "analysis-ETCH-total_used_pct" in job_ids
+        assert "analysis-ETCH-*_core_load" in job_ids
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reload_removes_old_jobs_first(self):
+        deps = self._make_deps_with_profile()
+        sched = AnalysisScheduler(
+            AppSettings(scheduler_misfire_grace_time=60), deps
+        )
+        await sched.start()
+        await sched.reload(["CVD"])
+        assert len(sched._scheduler.get_jobs()) == 2
+        # Reload with different process
+        await sched.reload(["ETCH"])
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert "analysis-CVD-total_used_pct" not in job_ids
+        assert "analysis-ETCH-total_used_pct" in job_ids
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reload_skips_process_with_no_profile(self):
+        deps = self._make_deps_with_profile()
+        deps.profile_repo.resolve_profile = AsyncMock(return_value=None)
+        sched = AnalysisScheduler(
+            AppSettings(scheduler_misfire_grace_time=60), deps
+        )
+        await sched.start()
+        await sched.reload(["CVD"])
+        assert len(sched._scheduler.get_jobs()) == 0
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reload_uses_debug_processes_when_none_passed(self):
+        deps = self._make_deps_with_profile()
+        debug_settings = AppSettings(
+            scheduler_misfire_grace_time=60,
+            debug_read_only=True,
+            debug_processes=["PVD"],
+        )
+        sched = AnalysisScheduler(debug_settings, deps)
+        await sched.start()
+        await sched.reload()  # no processes arg → debug mode resolution
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert "analysis-PVD-total_used_pct" in job_ids
+        assert "analysis-PVD-*_core_load" in job_ids
+        await sched.shutdown(timeout=1.0)

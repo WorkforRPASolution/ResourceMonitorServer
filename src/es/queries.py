@@ -62,3 +62,59 @@ class QueryBuilder:
                 }
             }
         }
+
+    # ------------------------------------------------------------------
+    # Phase 1: metric aggregation query
+    # ------------------------------------------------------------------
+    _TERMS_AGG_SIZE = 30000  # 20K PCs + headroom
+
+    def build_metric_aggregation_query(
+        self,
+        now: datetime,
+        window_minutes: int,
+        metric_fields: list[str],
+        agg_types: dict[str, str] | None = None,
+        process: str | None = None,
+    ) -> dict:
+        """Build an ES 7.x search body for metric aggregation.
+
+        Returns a ``size=0`` query with a ``terms`` aggregation on
+        ``eqpId.keyword`` and one sub-aggregation per metric field.
+        The sub-aggregation type (max/min/avg) is determined by
+        ``agg_types``; defaults to ``max`` if not specified.
+
+        ``process`` adds a term filter on ``process.keyword`` as a safety
+        guard — the index pattern already scopes to a single process, but
+        this prevents cross-contamination if the naming convention changes.
+        """
+        if agg_types is None:
+            agg_types = {}
+
+        sub_aggs: dict = {}
+        for field in metric_fields:
+            agg = agg_types.get(field, "max")
+            sub_aggs[f"{field}_{agg}"] = {agg: {"field": field}}
+
+        filters: list[dict] = [
+            self.build_time_range_filter(now, window_minutes),
+        ]
+        if process is not None:
+            filters.append({"term": {"process.keyword": process}})
+
+        return {
+            "size": 0,
+            "query": {
+                "bool": {
+                    "filter": filters,
+                }
+            },
+            "aggs": {
+                "by_eqp": {
+                    "terms": {
+                        "field": "eqpId.keyword",
+                        "size": self._TERMS_AGG_SIZE,
+                    },
+                    "aggs": sub_aggs,
+                }
+            },
+        }

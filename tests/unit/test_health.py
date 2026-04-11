@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.api import deps, health
+from src.api import health
 from src.config.settings import AppSettings
 
 

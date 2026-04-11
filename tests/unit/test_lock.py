@@ -5,7 +5,7 @@ acquire — kazoo Lock is not re-entrant. Caching the Lock instance and
 re-acquiring it has undefined behavior.
 """
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from kazoo.exceptions import (

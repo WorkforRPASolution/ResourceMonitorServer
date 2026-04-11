@@ -36,6 +36,16 @@ _INTROSPECT_POSITIVE_TTL = 600  # 10 min
 _INTROSPECT_NEGATIVE_TTL = 300  # 5 min
 _INTROSPECT_CACHE_MAXSIZE = 500
 
+# Phase 1: ES field types that represent numeric values.
+_NUMERIC_ES_TYPES = frozenset({
+    "float", "half_float", "scaled_float", "double",
+    "integer", "long", "short", "byte",
+})
+
+# Sentinel for negative caching of get_numeric_field_names — distinguishes
+# "we queried and got nothing" from "we never queried".
+_NUMERIC_FIELDS_EMPTY: list[str] = []
+
 
 class ESClient:
     """Async ES 7.x client.
@@ -70,6 +80,14 @@ class ESClient:
             ttl=introspect_positive_ttl, **cache_kwargs
         )
         self._introspect_negative: TTLCache[str, bool] = TTLCache(
+            ttl=introspect_negative_ttl, **cache_kwargs
+        )
+        # Phase 1: separate cache for get_numeric_field_names (keyed by
+        # index_pattern only, unlike the per-field introspect caches).
+        self._numeric_fields_positive: TTLCache[str, list[str]] = TTLCache(
+            ttl=introspect_positive_ttl, **cache_kwargs
+        )
+        self._numeric_fields_negative: TTLCache[str, bool] = TTLCache(
             ttl=introspect_negative_ttl, **cache_kwargs
         )
 
@@ -163,3 +181,42 @@ class ESClient:
         # Negative result — short TTL so the next query retries.
         self._introspect_negative[cache_key] = True
         return "unknown"
+
+    async def get_numeric_field_names(self, index_pattern: str) -> list[str]:
+        """Return all numeric field names from the index mapping.
+
+        Phase 1 uses this to resolve metric pattern wildcards against actual
+        ES fields. Cached with the same dual-TTL strategy as
+        ``introspect_field_type``: positive (10 min) for stable mappings,
+        negative (5 min) for missing indices that may appear after roll.
+        """
+        if index_pattern in self._numeric_fields_positive:
+            return self._numeric_fields_positive[index_pattern]
+        if index_pattern in self._numeric_fields_negative:
+            return _NUMERIC_FIELDS_EMPTY
+
+        try:
+            mapping = await self.client.indices.get_mapping(
+                index=index_pattern, allow_no_indices=True
+            )
+            fields: set[str] = set()
+            for idx_data in mapping.values():
+                props = idx_data.get("mappings", {}).get("properties", {})
+                for name, meta in props.items():
+                    if meta.get("type") in _NUMERIC_ES_TYPES:
+                        fields.add(name)
+            result = sorted(fields)
+            self._numeric_fields_positive[index_pattern] = result
+            return result
+        except NotFoundError:
+            logger.warning(
+                "es_index_not_found_for_numeric_fields", pattern=index_pattern
+            )
+        except Exception as e:
+            logger.warning(
+                "es_get_numeric_fields_failed",
+                pattern=index_pattern,
+                error=str(e),
+            )
+        self._numeric_fields_negative[index_pattern] = True
+        return _NUMERIC_FIELDS_EMPTY

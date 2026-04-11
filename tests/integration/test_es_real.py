@@ -10,7 +10,7 @@ real OrbStack ES 7.11.2 container that:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import SecretStr
@@ -168,7 +168,7 @@ def test_resolve_index_range_lowercases_process():
 def test_build_time_range_filter_shape():
     settings = AppSettings()
     qb = QueryBuilder(settings)
-    now = datetime(2026, 4, 8, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 8, 12, 0, 0, tzinfo=UTC)
     f = qb.build_time_range_filter(now, window_minutes=10)
     assert f["range"]["@timestamp"]["lte"].startswith("2026-04-08T12:00:00")
     assert f["range"]["@timestamp"]["gte"].startswith("2026-04-08T11:50:00")

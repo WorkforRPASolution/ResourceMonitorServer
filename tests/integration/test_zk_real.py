@@ -15,7 +15,6 @@ import threading
 import uuid
 
 import pytest
-from kazoo.exceptions import NoNodeError
 from pydantic import SecretStr
 
 from src.config.settings import AppSettings
