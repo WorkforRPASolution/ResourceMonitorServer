@@ -1,4 +1,4 @@
-# SCHEMA — ResourceMonitorServer (Phase 0)
+# SCHEMA — ResourceMonitorServer (Phase 0–1)
 
 ResourceMonitorServer가 EARS DB(MongoDB)에서 직접 다루는 모든 컬렉션의 스키마 레퍼런스. 본 문서는 **현재 코드에 박혀 있는 사실**을 기준으로 합니다 — 설계 의도는 [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md), 결정 배경은 [ARCHITECTURE.md](ARCHITECTURE.md), 외부 컬렉션의 풀 스키마는 `~/Developer/ARS/WebManager/docs/SCHEMA.md` 참고.
 

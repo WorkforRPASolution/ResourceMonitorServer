@@ -2,7 +2,7 @@
 
 공장 PC(최대 20,000대)에서 ResourceAgent가 수집해 Elasticsearch에 저장한 리소스 메트릭을 주기적으로 분석하고, 이상 발생 시 기존 Email REST API로 알림을 발송하는 분산 모니터링 서비스.
 
-> **현재 상태**: Phase 0 (기반 구축) — 골격, 인프라 연동, 분산 조정, 헬스/관리 API까지 완료. 이상탐지 로직과 알림 발송은 Phase 1부터.
+> **현재 상태**: Phase 1 (분석엔진 + 알림 발송) — 임계값 기반 이상탐지, 메트릭 타입별 집계(max/state_check), 이메일 알림 발송까지 구현 완료. Debug Read-Only 모드로 운영 데이터 관찰 가능.
 
 ## 문서 맵
 
@@ -87,7 +87,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 | Zookeeper | 참여 | **연결 안 함** (`init_distributed`/`leader_election`/`partition_manager` 전부 스킵) |
 | Redis | cooldown 읽기/쓰기 | **읽기만** — local TTLCache 만 사용 |
 | Email API | `send_alert` 실제 발송 | **`debug_would_send_email` 로그만** |
-| Scheduler | 정상 기동 + job 실행 | **정상 기동** (분석 흐름 관찰 가능) |
+| Scheduler | 정상 기동 + job 실행 | **정상 기동** — 분석 엔진이 ES 조회 + 임계값 비교까지 수행, breach 감지 시 `debug_would_send_email` 로그 출력 |
 
 Debug 모드 전용 옵션:
 - `MONITOR_DEBUG_PROCESSES=ETCH,CVD` — 특정 process 만 분석 대상으로 지정. 비어있으면 `EQP_INFO.get_distinct_processes()` 결과 전체 사용
@@ -120,9 +120,15 @@ src/
 ├── config/
 │   ├── settings.py         # MONITOR_* 환경 변수 → AppSettings
 │   └── constants.py        # 변하지 않는 상수 (ZK paths, 캐시 크기, ALERT 코드)
+├── analyzer/                   # Phase 1: 분석 엔진
+│   ├── engine.py           # AnalysisEngine — ES 조회→임계값 비교→알림 오케스트레이션
+│   ├── threshold.py        # evaluate_thresholds + evaluate_state_check (순수 로직)
+│   ├── alert_builder.py    # ThresholdBreach → EmailAlertRequest + 카테고리 분류
+│   ├── es_parser.py        # ES aggregation 응답 파싱
+│   └── metric_resolver.py  # 와일드카드 패턴 해석 + agg_type 결정 (max/state_check)
 ├── es/
-│   ├── client.py           # ES 7.x AsyncElasticsearch 래퍼
-│   └── queries.py          # 인덱스 해석, time range 필터 빌더
+│   ├── client.py           # ES 7.x AsyncElasticsearch 래퍼 + get_numeric_field_names
+│   └── queries.py          # 인덱스 해석, time range 필터, 메트릭 집계 쿼리 빌더
 ├── db/
 │   ├── client.py           # MongoClient (motor) — close()는 sync
 │   ├── models.py           # MonitorProfile / Scope / EqpInfo (Pydantic v2)
@@ -140,7 +146,7 @@ src/
 │   ├── leader_election.py  # 전용 ThreadPoolExecutor, restart_after_loss
 │   └── partition_manager.py# 멤버십 변화 디바운스, 라운드로빈 분배, epoch+ts 가드
 ├── scheduler/
-│   └── jobs.py             # AnalysisScheduler (자체 _running 플래그 추적)
+│   └── jobs.py             # AnalysisScheduler — reload(processes)로 job 등록, AnalysisEngine 연동
 ├── api/
 │   ├── deps.py             # request.app.state 의존성 주입
 │   ├── health.py           # /healthz/{live,ready}
@@ -153,7 +159,7 @@ src/
     └── scheduler_init.py   # init_scheduler
 
 tests/
-├── unit/         # 294 tests (mock 기반, <5s)
+├── unit/         # 376 tests (mock 기반, <5s)
 ├── integration/  # 56 tests (OrbStack 기반 — lifespan, failure modes, ZK LOST recovery)
 └── e2e/          # 5 tests (real uvicorn subprocess, multi-instance ZK failover)
 ```
@@ -161,7 +167,7 @@ tests/
 ## 테스트
 
 ```bash
-make test-fast           # unit only — 294 tests, <5s
+make test-fast           # unit only — 376 tests, <5s
 make test-integration    # unit + integration (OrbStack) — ~80s
 make test-e2e            # e2e (real uvicorn subprocess + 다중 인스턴스) — ~4분
 make test-full           # 위 3개 전부
@@ -186,3 +192,12 @@ TDD 사이클과 컨벤션은 [CONTRIBUTING.md](CONTRIBUTING.md) 참고.
 | **8.5** | **Resilience hardening** (ZK startup budget, retry/circuit, infra metrics, outbox, exception contract) | **done** (v6, 2026-04-08) |
 | 9 | Dockerfile + K8s manifests | done |
 | 10 | Integration tests (OrbStack) | done |
+| **Phase 1** | | |
+| 1-1 | Metric resolver + ES numeric field introspection | **done** |
+| 1-2 | Threshold comparator + state_check (process watch) | **done** |
+| 1-3 | ES 집계 쿼리 빌더 (terms agg, 메트릭 타입별 max/min) | **done** |
+| 1-4 | Alert builder (카테고리 분류 + sub_code 생성) | **done** |
+| 1-5 | Analysis Engine (오케스트레이션) | **done** |
+| 1-6 | Scheduler reload(processes) + PartitionManager 연결 | **done** |
+| 1-7 | Prometheus 메트릭 (THRESHOLD_BREACHES, ALERTS_SUPPRESSED) | **done** |
+| 1-8 | Integration + E2E 테스트 검증 (437 tests 전부 통과) | **done** (2026-04-12) |

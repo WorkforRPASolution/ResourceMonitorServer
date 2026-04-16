@@ -308,7 +308,15 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 - ES 8.x 문서 보지 마세요. `http_auth=`, `timeout=`, raw dict 응답 — 모두 7.x 전용.
 - `NotFoundError` 는 `client.indices.get_field_mapping` 에서 자주 발생 → "unknown" 캐싱.
 
-### 8.4 Debug Read-Only 모드
+### 8.4 Analysis Engine (Phase 1)
+
+- Threshold 미동작? → (1) metric_pattern 와일드카드가 ES 인덱스의 실제 필드에 매칭되는지 확인, (2) `get_numeric_field_names()` 캐시가 빈 리스트를 반환하는지 (자정 인덱스 롤), (3) `agg_type` 이 올바른지 (`state_check` vs `max`).
+- 이메일 미발송? → (1) `is_cooling_down_batch` 결과 확인, (2) `email_client.send_alert` 반환값, (3) Akka `EMAIL_TEMPLATE_REPOSITORY` 에 `code=RESOURCE_MONITOR`, `sub_code=CPU_WARNING` 등 템플릿 등록 여부.
+- State check breach: `required` 필드 min=0 → breach (프로세스 다운), `forbidden` 필드 max>0 → breach (금지 프로세스 실행).
+- `_es_semaphore` 는 인스턴스당 동시 ES 쿼리를 3개로 제한. ES 과부하 방지.
+- Process filter 누락 의심 시: `build_metric_aggregation_query` 에 `process` 파라미터가 전달되는지 확인. 인덱스 명으로 이미 분리되지만 방어적 필터도 존재.
+
+### 8.5 Debug Read-Only 모드
 
 `MONITOR_DEBUG_READ_ONLY=true` 는 "production 데이터를 관찰하지만 절대 변경하지 않는" 전용 부팅 모드입니다. 설계 목적은 두 가지:
 
@@ -360,13 +368,15 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 PR 보내기 전에:
 
-- [ ] `make test-fast` 통과 (227 tests baseline — unit only)
+- [ ] `make test-fast` 통과 (376 tests baseline — unit only)
 - [ ] `make lint` 통과
 - [ ] 새 코드의 모든 분기에 테스트 있음
 - [ ] 분산 변경은 LOST/SUSPENDED 경로도 테스트했는가?
 - [ ] 새 환경 변수는 `.env.example` (있으면) + README 갱신했는가?
 - [ ] 새 메트릭은 [ARCHITECTURE.md 8장](ARCHITECTURE.md#8-메트릭--관측) 에도 추가했는가?
 - [ ] critical gotcha를 새로 발견했다면 [ARCHITECTURE.md G section](ARCHITECTURE.md#4-critical-gotchas--pitfalls) 갱신했는가?
+- [ ] 분석 로직 변경 시 threshold/alert_builder/es_parser 테스트 업데이트했는가?
+- [ ] 새 메트릭 카테고리 추가 시 `classify_metric_category()` + `constants.py` ALERT_CATEGORY_* 갱신했는가?
 
 ---
 

@@ -1,7 +1,7 @@
 [project]
 name = "resource-monitor-server"
 version = "0.1.0"
-description = "Factory PC resource monitoring server (Phase 0 foundation)"
+description = "Factory PC resource monitoring server (Phase 1: analysis engine + alerting)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110.0",
