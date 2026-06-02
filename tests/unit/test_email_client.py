@@ -1,7 +1,10 @@
 """Tests for src.alert.email_client.
 
-🚨 CRITICAL (v4): Akka HttpWebServer returns `{"result":"success", ...}` with
-LOWERCASE "success". v3's `== "Success"` check would have always returned False.
+Akka's EmailWorker actually returns ``{"result":"Success","message":""}``
+(capital S, empty message). The client compares case-insensitively so both
+``"Success"`` and ``"success"`` are accepted as the success path; anything
+else (``"Fail"``, missing field, non-string) is treated as a failure and
+appended to the in-memory outbox.
 """
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +29,7 @@ def sample_request() -> EmailAlertRequest:
     return EmailAlertRequest(
         hostname="HOST01",
         ip="10.0.0.1",
+        app="ARS",
         process="CVD",
         eqp_model="ABC123",
         line="LINE1",
@@ -126,10 +130,27 @@ class TestEmailClientConnect:
 
 @pytest.mark.unit
 class TestSendAlertSuccess:
+    async def test_returns_true_on_capital_success(
+        self, settings, sample_request
+    ):
+        """Akka's actual response: ``{"result":"Success","message":""}``.
+
+        Source: ``EmailWorker.scala`` (both ``SendEmail`` and
+        ``SendEmailForRTM``) emit capital-S ``"Success"``. This is the
+        primary success-path case the client must recognize.
+        """
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(
+            200, {"result": "Success", "message": ""}
+        )
+        assert await client.send_alert(sample_request) is True
+
     async def test_returns_true_on_lowercase_success(
         self, settings, sample_request
     ):
-        """The Akka server returns `{"result":"success"}` LOWERCASE."""
+        """Comparison is case-insensitive, so a hypothetical lowercase
+        ``"success"`` from Akka would also be accepted (defensive)."""
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
@@ -137,24 +158,13 @@ class TestSendAlertSuccess:
         )
         assert await client.send_alert(sample_request) is True
 
-    async def test_returns_false_on_capital_success(
-        self, settings, sample_request
-    ):
-        """If someone sends capital S, we must NOT accept it (guard regression)."""
-        client = EmailAlertClient(settings)
-        client._http_client = AsyncMock()
-        client._http_client.post.return_value = _mock_response(
-            200, {"result": "Success", "message": "..."}
-        )
-        assert await client.send_alert(sample_request) is False
-
     async def test_returns_false_on_lowercase_fail(
         self, settings, sample_request
     ):
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "fail", "message": "template not found"}
+            200, {"result": "Fail", "message": "template not found"}
         )
         assert await client.send_alert(sample_request) is False
 
@@ -209,7 +219,7 @@ class TestSendAlertRequestShape:
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "success", "message": "ok"}
+            200, {"result": "Success", "message": ""}
         )
         await client.send_alert(sample_request)
         call = client._http_client.post.call_args
@@ -220,12 +230,24 @@ class TestSendAlertRequestShape:
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "success", "message": "ok"}
+            200, {"result": "Success", "message": ""}
         )
         await client.send_alert(sample_request)
         kwargs = client._http_client.post.call_args.kwargs
         assert kwargs["json"]["model"] == "ABC123"
         assert "eqp_model" not in kwargs["json"]
+
+    async def test_posts_json_with_app_field(self, settings, sample_request):
+        """Payload must include `app` — Akka's EmailHttpDataFormat
+        requires it and uses it as a key into EMAIL_TEMPLATE."""
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(
+            200, {"result": "Success", "message": ""}
+        )
+        await client.send_alert(sample_request)
+        kwargs = client._http_client.post.call_args.kwargs
+        assert kwargs["json"]["app"] == "ARS"
 
 
 @pytest.mark.unit
@@ -277,7 +299,7 @@ class TestDebugReadOnlyGuard:
         client = EmailAlertClient(normal_settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "success", "message": "ok"}
+            200, {"result": "Success", "message": ""}
         )
         await client.send_alert(sample_request)
         client._http_client.post.assert_called_once()
@@ -315,11 +337,11 @@ class TestEmailOutbox:
         assert snapshot[0]["reason"] == "connect_error"
 
     async def test_outbox_records_app_failure(self, settings, sample_request):
-        """Akka returns result=fail — counts as a failure for outbox."""
+        """Akka returns result=Fail — counts as a failure for outbox."""
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "fail", "message": "queue full"}
+            200, {"result": "Fail", "message": "queue full"}
         )
         await client.send_alert(sample_request)
         snapshot = client.get_outbox_snapshot()
@@ -333,7 +355,7 @@ class TestEmailOutbox:
         client = EmailAlertClient(settings)
         client._http_client = AsyncMock()
         client._http_client.post.return_value = _mock_response(
-            200, {"result": "success", "message": "ok"}
+            200, {"result": "Success", "message": ""}
         )
         await client.send_alert(sample_request)
         assert client.get_outbox_snapshot() == []
@@ -351,6 +373,7 @@ class TestEmailOutbox:
             req = EmailAlertRequest(
                 hostname=f"H{i}",
                 ip="10.0.0.1",
+                app="ARS",
                 process="CVD",
                 eqp_model="M",
                 line="L1",

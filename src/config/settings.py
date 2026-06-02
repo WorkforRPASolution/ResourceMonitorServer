@@ -62,6 +62,10 @@ class AppSettings(BaseSettings):
     # Email alert HTTP API (Akka HttpWebServer)
     email_api_url: str = "http://httpwebserver:8080/EmailNotify"
     email_api_timeout: int = 10
+    # Akka EmailWorker 가 EMAIL_TEMPLATE / EMAIL_CATEGORY 를 조회할 때 쓰는 app 키.
+    # PRD §8.1 에 명시된 필수 필드. 기본값 "ARS" 는 EARS 운영 환경에서
+    # SendEmailForRTM 핸들러가 하드코딩으로 사용하는 값과 일치.
+    email_app_name: str = "ARS"
 
     # Grafana links (for alert body)
     grafana_base_url: str = "http://grafana:3000"

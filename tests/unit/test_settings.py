@@ -7,6 +7,18 @@ from pydantic import SecretStr
 from src.config.settings import AppSettings, get_settings
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_dotenv(monkeypatch, tmp_path):
+    """이 모듈의 테스트는 빌트인 기본값을 검증한다.
+
+    개발자가 프로젝트 루트에 ``.env`` 를 두면 (로컬 실행/디버깅 시 흔함)
+    pydantic-settings 가 cwd 상대경로로 그 파일을 읽어 기본값 테스트가
+    오염된다. cwd 를 빈 임시 디렉토리로 옮겨 ``.env`` 를 못 찾게 격리한다.
+    (env-override 테스트는 monkeypatch.setenv 를 쓰므로 영향 없음.)
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.mark.unit
 class TestAppSettingsDefaults:
     def test_default_es_hosts_is_list(self):

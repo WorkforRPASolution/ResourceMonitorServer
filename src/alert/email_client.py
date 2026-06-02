@@ -1,14 +1,16 @@
 """HTTP client for the Akka HttpWebServer `/EmailNotify` endpoint.
 
-🚨 CRITICAL (v4): The Akka server replies with::
+Akka's `EmailWorker` returns ``HttpResponse(result, message)`` where the
+``result`` field is the literal string ``"Success"`` on the success path
+(see ``EmailWorker.scala`` — both ``SendEmail`` and ``SendEmailForRTM``
+emit capital-S ``"Success"``). On any application-level failure (missing
+template, missing email category, parse exception) it returns
+``"Fail"`` with a diagnostic message.
 
-    case class HttpResponse(result: String, message: String)
-    sender() ! JsonInterface.toJson(HttpResponse("success", "send ok"))
-
-The ``result`` string is LOWERCASE ``"success"``. Earlier revisions compared
-against ``"Success"`` and every send silently "failed" (the email was sent,
-but we logged it as a failure and never set the cooldown). Do not change this
-comparison without checking the Akka side first.
+The comparison below is case-insensitive so we tolerate either casing —
+earlier revisions of this module assumed lowercase ``"success"`` and
+every send silently "failed" (email was actually delivered, but we
+logged failure and never set the cooldown, leading to duplicate alerts).
 
 v6 P1-3 — In-memory outbox:
     Failed alerts are appended to a bounded ``deque(maxlen=1000)`` so
@@ -31,7 +33,8 @@ from src.config.settings import AppSettings
 
 logger = structlog.get_logger(__name__)
 
-# Lowercase literal matches what Akka actually sends. Do NOT change.
+# Akka emits "Success" (capital S); we compare case-insensitively so a
+# future Akka tweak to lowercase doesn't silently break alerting.
 _SUCCESS_RESULT = "success"
 # v6 P1-3 — bound on the in-memory outbox. 1000 entries × ~1KB each = ~1MB,
 # negligible for any pod we'd run. LRU eviction (deque drops oldest).
@@ -165,7 +168,7 @@ class EmailAlertClient:
 
         result = data.get("result", "") if isinstance(data, dict) else ""
         message = data.get("message", "") if isinstance(data, dict) else ""
-        if result == _SUCCESS_RESULT:
+        if isinstance(result, str) and result.lower() == _SUCCESS_RESULT:
             logger.info("email_send_ok", message=message)
             return True
         logger.warning(

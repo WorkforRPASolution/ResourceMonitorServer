@@ -61,6 +61,7 @@ def _make_settings():
     settings.debug_read_only = False
     settings.grafana_base_url = "http://grafana:3000"
     settings.grafana_dashboard_uid = "abc123"
+    settings.email_app_name = "ARS"
     return settings
 
 

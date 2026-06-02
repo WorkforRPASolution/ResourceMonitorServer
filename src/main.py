@@ -294,6 +294,7 @@ async def _self_alert_critical(
             EmailAlertRequest(
                 hostname=settings.instance_id or "unknown",
                 ip="self",
+                app=settings.email_app_name,
                 process=SELF_ALERT_PROCESS,
                 eqp_model=SELF_ALERT_MODEL,
                 line=SELF_ALERT_LINE,

@@ -60,10 +60,12 @@ class TestClassifyMetricCategory:
 # build_alert_request
 # ------------------------------------------------------------------
 def _make_settings(grafana_base_url: str = "http://grafana:3000",
-                   grafana_dashboard_uid: str = "abc123") -> MagicMock:
+                   grafana_dashboard_uid: str = "abc123",
+                   email_app_name: str = "ARS") -> MagicMock:
     settings = MagicMock()
     settings.grafana_base_url = grafana_base_url
     settings.grafana_dashboard_uid = grafana_dashboard_uid
+    settings.email_app_name = email_app_name
     return settings
 
 
@@ -203,6 +205,25 @@ class TestBuildAlertRequest:
             window_minutes=5,
         )
         assert req.code == ALERT_CODE_RESOURCE_MONITOR
+
+    def test_build_alert_request_app_from_settings(self):
+        """`app` must be sourced from settings.email_app_name (Akka requires it)."""
+        breach = ThresholdBreach(
+            eqp_id="EQP01",
+            metric="total_used_pct",
+            current_value=92.5,
+            threshold_value=80.0,
+            severity="WARNING",
+        )
+        req = build_alert_request(
+            breach=breach,
+            eqp_info={"localpc": "H", "ipAddr": "1.2.3.4", "eqpModel": "M", "line": "L"},
+            process="CVD",
+            settings=_make_settings(email_app_name="CUSTOM_APP"),
+            metric_pattern="cpu",
+            window_minutes=5,
+        )
+        assert req.app == "CUSTOM_APP"
 
 
 # ------------------------------------------------------------------

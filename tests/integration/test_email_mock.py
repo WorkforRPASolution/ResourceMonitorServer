@@ -20,6 +20,7 @@ def _make_request() -> EmailAlertRequest:
     return EmailAlertRequest(
         hostname="test-host",
         ip="10.0.0.1",
+        app="ARS",
         process="TEST_PROC",
         eqp_model="TEST_MODEL_ABC",
         line="L1",
@@ -37,11 +38,13 @@ async def _make_client(url: str) -> EmailAlertClient:
 
 
 # ----------------------------------------------------------------------
-# 1. success path — Akka-style lowercase response
+# 1. success path — actual Akka response is capital-S "Success"
 # ----------------------------------------------------------------------
-async def test_send_alert_success_lowercase(mock_email_server):
-    """Regression guard for v4 bug: result must be compared as lowercase."""
-    mock_email_server["next_response"] = {"result": "success", "message": "send ok"}
+async def test_send_alert_success_capital(mock_email_server):
+    """Akka's EmailWorker returns ``HttpResponse("Success", "")``.
+    Verifies the case-insensitive comparison treats this as success and
+    that the payload includes every field Akka requires."""
+    mock_email_server["next_response"] = {"result": "Success", "message": ""}
     mock_email_server["next_status"] = 200
     mock_email_server["received"].clear()
 
@@ -57,16 +60,40 @@ async def test_send_alert_success_lowercase(mock_email_server):
     # Payload must use "model" (Akka key), not "eqp_model"
     assert received["model"] == "TEST_MODEL_ABC"
     assert "eqp_model" not in received
+    # `app` is required by Akka's EmailHttpDataFormat
+    assert received["app"] == "ARS"
     assert received["code"] == "RESOURCE_MONITOR"
     assert received["variables"] == {"THRESHOLD": "90", "VALUE": "95"}
+    # Sanity check: every key Akka expects is present
+    expected_keys = {
+        "hostname", "ip", "app", "process", "model", "line",
+        "code", "subcode", "variables",
+    }
+    assert set(received.keys()) == expected_keys
+
+
+async def test_send_alert_success_lowercase_also_accepted(mock_email_server):
+    """Defensive: a hypothetical lowercase ``"success"`` from Akka is
+    also accepted (case-insensitive comparison)."""
+    mock_email_server["next_response"] = {"result": "success", "message": "send ok"}
+    mock_email_server["next_status"] = 200
+    mock_email_server["received"].clear()
+
+    client = await _make_client(mock_email_server["url"])
+    try:
+        result = await client.send_alert(_make_request())
+    finally:
+        await client.close()
+
+    assert result is True
 
 
 # ----------------------------------------------------------------------
 # 2. application-level failure
 # ----------------------------------------------------------------------
 async def test_send_alert_app_failure(mock_email_server):
-    """Akka returns 200 but result=fail — client must return False."""
-    mock_email_server["next_response"] = {"result": "fail", "message": "SMTP refused"}
+    """Akka returns 200 but result=Fail — client must return False."""
+    mock_email_server["next_response"] = {"result": "Fail", "message": "SMTP refused"}
     mock_email_server["next_status"] = 200
     mock_email_server["received"].clear()
 
@@ -102,7 +129,7 @@ async def test_send_alert_http_error(mock_email_server):
 # 4. timeout — server delays past client timeout
 # ----------------------------------------------------------------------
 async def test_send_alert_timeout(mock_email_server):
-    mock_email_server["next_response"] = {"result": "success", "message": "ok"}
+    mock_email_server["next_response"] = {"result": "Success", "message": ""}
     mock_email_server["next_status"] = 200
     mock_email_server["delay_sec"] = 2.0
     mock_email_server["received"].clear()

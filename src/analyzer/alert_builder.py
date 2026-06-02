@@ -70,6 +70,7 @@ def build_alert_request(
     return EmailAlertRequest(
         hostname=eqp_info.get("localpc", ""),
         ip=eqp_info.get("ipAddr", ""),
+        app=settings.email_app_name,
         process=process,
         eqp_model=eqp_info.get("eqpModel", ""),
         line=eqp_info.get("line", ""),

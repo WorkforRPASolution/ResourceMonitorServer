@@ -139,7 +139,7 @@ src/
 │   └── cooldown.py         # AlertCooldownManager + local TTLCache fallback
 ├── alert/
 │   ├── models.py           # EmailAlertRequest (Pydantic v2)
-│   └── email_client.py     # Akka /EmailNotify — "success" lowercase 검증
+│   └── email_client.py     # Akka /EmailNotify — "Success" 응답 case-insensitive 검증 + outbox
 ├── distributed/
 │   ├── zk_client.py        # kazoo 래퍼, asyncio bridge, 4lw fallback
 │   ├── lock.py             # ZKAnalysisLock (per-process asyncio.Lock + 새 kazoo.Lock)
@@ -159,15 +159,21 @@ src/
     └── scheduler_init.py   # init_scheduler
 
 tests/
-├── unit/         # 376 tests (mock 기반, <5s)
-├── integration/  # 56 tests (OrbStack 기반 — lifespan, failure modes, ZK LOST recovery)
+├── unit/         # 392 tests (mock 기반, <5s)
+├── integration/  # 64 tests (OrbStack 기반 — lifespan, failure modes, ZK LOST recovery, Phase 1 분석→알림 E2E)
 └── e2e/          # 5 tests (real uvicorn subprocess, multi-instance ZK failover)
+
+tools/            # 로컬 수동 테스트 도구 (운영 코드 아님 — src/ 미의존)
+├── mock_email_server.py  # stdlib 기반 mock /EmailNotify 서버 (받은 메일 콘솔 출력)
+├── send_test_alert.py    # .env config 로 EmailAlertClient 실발송 트리거
+├── alert_scenarios.py    # 시나리오(cpu/disk/process) → EmailAlertRequest
+└── email_mock.py         # 수신 포맷팅 + 응답 본문 (순수 로직, 단위테스트 대상)
 ```
 
 ## 테스트
 
 ```bash
-make test-fast           # unit only — 376 tests, <5s
+make test-fast           # unit only — 392 tests, <5s
 make test-integration    # unit + integration (OrbStack) — ~80s
 make test-e2e            # e2e (real uvicorn subprocess + 다중 인스턴스) — ~4분
 make test-full           # 위 3개 전부
@@ -200,4 +206,9 @@ TDD 사이클과 컨벤션은 [CONTRIBUTING.md](CONTRIBUTING.md) 참고.
 | 1-5 | Analysis Engine (오케스트레이션) | **done** |
 | 1-6 | Scheduler reload(processes) + PartitionManager 연결 | **done** |
 | 1-7 | Prometheus 메트릭 (THRESHOLD_BREACHES, ALERTS_SUPPRESSED) | **done** |
-| 1-8 | Integration + E2E 테스트 검증 (437 tests 전부 통과) | **done** (2026-04-12) |
+| 1-8 | Integration + E2E 테스트 검증 | **done** (2026-04-12) |
+| 1-9 | Akka `/EmailNotify` 응답 case-insensitive 비교 + `app` 필수 필드 추가 | **done** (2026-06-02) |
+| 1-10 | 로컬 mock 이메일 도구 (`tools/`) + 단위테스트 | **done** (2026-06-02) |
+| 1-11 | Phase 1 분석→알림 통합 E2E (실 ES/Mongo/Redis, 7 시나리오) | **done** (2026-06-02) |
+
+> 테스트 총계: unit 392 + integration 64 + e2e 5 = **461 tests** 전부 통과 (2026-06-02).

@@ -218,12 +218,14 @@ make fmt                # ruff format src tests
 특정 버그 수정 후에는 그 버그를 잡는 테스트에 **회귀 가드** 주석을 남기세요:
 
 ```python
-def test_returns_false_on_capital_success():
-    """Regression: Akka returns lowercase 'success'. Don't accept 'Success'."""
+def test_returns_true_on_capital_success():
+    """Regression: Akka's EmailWorker returns capital-S "Success".
+    Earlier code only accepted lowercase "success" so every send was logged
+    as a failure (mail delivered, cooldown never set → 중복 알림)."""
     ...
 ```
 
-`tests/unit/test_email_client.py::test_returns_false_on_capital_success` 가 좋은 예시.
+`tests/unit/test_email_client.py::test_returns_true_on_capital_success` 가 좋은 예시.
 
 ---
 
