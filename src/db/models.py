@@ -11,6 +11,8 @@ field names the rest of the EARS system already expects.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -48,6 +50,30 @@ class MongoUnavailableError(Exception):
 
     def __init__(self, msg: str) -> None:
         super().__init__(msg)
+
+
+class ProfileVersionConflictError(Exception):
+    """v2 optimistic-lock failure: the stored ``governance.version`` did not
+    match the version the writer expected (a concurrent edit won the race).
+    The API layer maps this to HTTP 409.
+    """
+
+    def __init__(self, scope: Scope, expected_version: int) -> None:
+        super().__init__(
+            f"version conflict for {scope!r}: expected version {expected_version}"
+        )
+        self.scope = scope
+        self.expected_version = expected_version
+
+
+class ProfileValidationError(Exception):
+    """v2 effective-profile reference-integrity failure. Carries one message
+    per broken reference (with a ``rules[i].when[j].fact`` field path) so the
+    API can surface HTTP 422 with inline form errors (ADMIN-UI §6)."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = errors
 
 
 # ----------------------------------------------------------------------
@@ -100,65 +126,15 @@ class Scope(BaseModel):
         return hash((self.process, self.eqp_model, self.eqp_id))
 
 
-class ThresholdConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    warning: float
-    critical: float
-    cooldown_minutes: int
-
-
-class MetricSchedule(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    interval_minutes: int
-    window_minutes: int
-
-
-class AnalysisConfig(BaseModel):
-    """Analysis rule for one metric pattern (supports wildcards like `*_core_load`)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    metric_pattern: str
-    threshold: ThresholdConfig
-    schedule: MetricSchedule
-
-
 # ----------------------------------------------------------------------
-# Aggregate root
+# Aggregate root (v2)
 # ----------------------------------------------------------------------
-class MonitorProfile(BaseModel):
-    """A set of analysis rules scoped to a portion of the equipment hierarchy."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str | None = None  # stringified ObjectId, populated by from_mongo
-    scope: Scope
-    analysis_configs: list[AnalysisConfig] = Field(default_factory=list)
-
-    def to_mongo(self) -> dict[str, Any]:
-        """Serialize for `insert_one` / `replace_one` (no `_id` — Mongo picks one)."""
-        return {
-            "scope": self.scope.to_mongo(),
-            "analysis_configs": [
-                ac.model_dump(mode="json") for ac in self.analysis_configs
-            ],
-        }
-
-    @classmethod
-    def from_mongo(cls, doc: dict[str, Any]) -> MonitorProfile:
-        """Deserialize a Mongo document.
-
-        `_id` is converted to a hex string and stored on `.id`. `created_at` /
-        `updated_at` are currently only used at the repository layer; they do
-        not live on the domain model.
-        """
-        raw_id = doc.get("_id")
-        id_str = str(raw_id) if raw_id is not None else None
-        scope = Scope.from_mongo(doc["scope"])
-        configs = [AnalysisConfig.model_validate(ac) for ac in doc.get("analysis_configs", [])]
-        return cls(id=id_str, scope=scope, analysis_configs=configs)
+# The v2 ``MonitorProfile`` aggregate is defined at the END of this module,
+# after its building blocks (Measure/Rule/NotifyChannel/Governance). The v1
+# ThresholdConfig/MetricSchedule/AnalysisConfig types were removed in the v2
+# schema switch (see SCHEMA.md §13); the class name MonitorProfile and the
+# to_mongo()/from_mongo() contract are preserved so repository.py is unchanged
+# at the import boundary.
 
 
 # ----------------------------------------------------------------------
@@ -304,8 +280,10 @@ class Condition(BaseModel):
     def _checks(self) -> Condition:
         if "." not in self.fact:
             raise ValueError(f"fact '{self.fact}' must be 'measureId.type'")
-        if self.quantifier == "count" and self.count_min is None:
-            raise ValueError("quantifier 'count' requires 'count_min'")
+        if self.quantifier == "count" and (self.count_min is None or self.count_min < 1):
+            # count_min must be >= 1; count_min=0 would make the condition fire
+            # unconditionally (n >= 0 is always true) → silent always-alert.
+            raise ValueError("quantifier 'count' requires count_min >= 1")
         if self.op == "trend==":
             if not isinstance(self.value, str):
                 raise ValueError("op 'trend==' requires a string value")
@@ -352,3 +330,185 @@ class Governance(BaseModel):
     updated_by: str = ""
     updated_at: datetime = Field(default_factory=utcnow)
     change_reason: str = ""
+
+
+# ======================================================================
+# v2 aggregate root + cascade fold + effective validation
+# ======================================================================
+class MonitorProfile(BaseModel):
+    """A monitoring profile for one scope (one Mongo document).
+
+    Holds the three v2 layers — ``measures`` (잰다), ``rules`` (판단) and
+    ``notify`` (알린다) — plus the ``enabled`` flag and ``governance`` token.
+    A *stored* document is usually a sparse overlay; the *effective* profile an
+    equipment actually runs is the cascade fold of every matching scope (see
+    :func:`fold_profiles`). The class name and the to_mongo/from_mongo contract
+    are kept stable from v1 so the repository boundary needs no edits.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None  # stringified ObjectId, populated by from_mongo
+    scope: Scope
+    enabled: bool = True
+    governance: Governance = Field(default_factory=Governance)
+    measures: list[Measure] = Field(default_factory=list)
+    rules: list[Rule] = Field(default_factory=list)
+    notify: dict[str, NotifyChannel] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _doc_consistency(self) -> MonitorProfile:
+        mids = [m.id for m in self.measures]
+        if len(mids) != len(set(mids)):
+            raise ValueError("duplicate measure id in profile")
+        rids = [r.id for r in self.rules]
+        if len(rids) != len(set(rids)):
+            raise ValueError("duplicate rule id in profile")
+        return self
+
+    # -- serialization -------------------------------------------------
+    def to_mongo(self) -> dict[str, Any]:
+        """Serialize for insert/replace (no ``_id`` — Mongo assigns one)."""
+        return {
+            "scope": self.scope.to_mongo(),
+            "enabled": self.enabled,
+            "governance": self.governance.model_dump(mode="json"),
+            "measures": [m.model_dump(mode="json") for m in self.measures],
+            "rules": [r.model_dump(mode="json") for r in self.rules],
+            "notify": {k: v.model_dump(mode="json") for k, v in self.notify.items()},
+        }
+
+    @classmethod
+    def from_mongo(cls, doc: dict[str, Any]) -> MonitorProfile:
+        raw_id = doc.get("_id")
+        id_str = str(raw_id) if raw_id is not None else None
+        gov_doc = doc.get("governance")
+        return cls(
+            id=id_str,
+            scope=Scope.from_mongo(doc["scope"]),
+            enabled=doc.get("enabled", True),
+            governance=Governance.model_validate(gov_doc) if gov_doc else Governance(),
+            measures=[Measure.model_validate(m) for m in doc.get("measures", [])],
+            rules=[Rule.model_validate(r) for r in doc.get("rules", [])],
+            notify={
+                k: NotifyChannel.model_validate(v)
+                for k, v in doc.get("notify", {}).items()
+            },
+        )
+
+    # -- hashing / identity -------------------------------------------
+    def structural_mongo(self) -> dict[str, Any]:
+        """``to_mongo()`` minus the volatile ``governance`` block — the basis
+        for seed drift detection so a fresh ``updated_at`` never forces a
+        spurious reseed that would stomp operator edits."""
+        doc = self.to_mongo()
+        doc.pop("governance", None)
+        return doc
+
+    def effective_signature(self) -> str:
+        """Stable hash of the *behavioural* content (measures/rules/notify/
+        enabled), independent of scope/governance. Equipment whose effective
+        profiles share a signature are analysed with a single ES query (engine
+        bucketing). Lists are sorted by id/name for order-stability."""
+        payload = {
+            "enabled": self.enabled,
+            "measures": sorted(
+                (m.model_dump(mode="json") for m in self.measures),
+                key=lambda m: m["id"],
+            ),
+            "rules": sorted(
+                (r.model_dump(mode="json") for r in self.rules),
+                key=lambda r: r["id"],
+            ),
+            "notify": {
+                k: self.notify[k].model_dump(mode="json") for k in sorted(self.notify)
+            },
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def fold_profiles(ordered: list[MonitorProfile], target_scope: Scope) -> MonitorProfile:
+    """Fold scope documents broadest→most-specific into one effective profile
+    (SCHEMA.md §6).
+
+    ``ordered`` must be sorted base→specific, e.g. ``[(*,*,*), (p,*,*), (p,m,*),
+    (p,m,e)]``. Merge is by key — ``measures`` by ``measure.id``, ``rules`` by
+    ``rule.id``, ``notify`` by channel name — and the more-specific object
+    replaces the whole entry (no field-level partial merge). ``enabled`` folds
+    with AND: any disabled level disables the effective profile.
+    """
+    measures: dict[str, Measure] = {}
+    rules: dict[str, Rule] = {}
+    notify: dict[str, NotifyChannel] = {}
+    enabled = True
+    governance = Governance()
+    for prof in ordered:
+        enabled = enabled and prof.enabled
+        for m in prof.measures:
+            measures[m.id] = m
+        for r in prof.rules:
+            rules[r.id] = r
+        for name, ch in prof.notify.items():
+            notify[name] = ch
+        governance = prof.governance
+    return MonitorProfile(
+        scope=target_scope,
+        enabled=enabled,
+        governance=governance,
+        measures=list(measures.values()),
+        rules=list(rules.values()),
+        notify=notify,
+    )
+
+
+def validate_effective(profile: MonitorProfile) -> list[str]:
+    """Reference-integrity check on a *folded* effective profile (SCHEMA.md §5
+    items 5/7/8, §6.4). Returns field-path error messages (empty when valid).
+
+    Run this on the effective profile, never on a sparse overlay — an overlay
+    alone may legitimately reference a measure that lives in a parent scope.
+    """
+    errors: list[str] = []
+    measures_by_id = {m.id: m for m in profile.measures}
+    for ri, rule in enumerate(profile.rules):
+        if rule.notify not in profile.notify:
+            errors.append(f"rules[{ri}].notify: channel '{rule.notify}' is not defined")
+        referenced: set[str] = set()
+        for ci, cond in enumerate(rule.when):
+            mid, _, ftype = cond.fact.partition(".")
+            measure = measures_by_id.get(mid)
+            if measure is None:
+                errors.append(f"rules[{ri}].when[{ci}].fact: measure '{mid}' not found")
+                continue
+            referenced.add(mid)
+            by_type = {f.type.value: f.type for f in measure.facts}
+            if ftype not in by_type:
+                errors.append(
+                    f"rules[{ri}].when[{ci}].fact: measure '{mid}' declares "
+                    f"no fact '{ftype}'"
+                )
+                continue
+            if not fc.op_allowed(by_type[ftype], cond.op):
+                errors.append(
+                    f"rules[{ri}].when[{ci}].op: '{cond.op}' is not allowed for "
+                    f"fact '{ftype}'"
+                )
+        for mid in referenced:
+            measure = measures_by_id[mid]
+            if rule.interval_minutes > measure.window_minutes:
+                errors.append(
+                    f"rules[{ri}].interval_minutes ({rule.interval_minutes}) exceeds "
+                    f"measure '{mid}'.window_minutes ({measure.window_minutes})"
+                )
+        # All measures a rule references must live on ONE proc dimension. The
+        # engine evaluates a rule per (eqp, proc) target; measures with different
+        # proc produce disjoint proc keys, so an AND rule across them could never
+        # fire (silent lost breach). Reject the misconfiguration at write time.
+        procs = {measures_by_id[mid].proc for mid in referenced}
+        if len(procs) > 1:
+            errors.append(
+                f"rules[{ri}]: conditions span measures with differing proc "
+                f"{sorted(procs)}; a rule must reference one proc dimension"
+            )
+    return errors

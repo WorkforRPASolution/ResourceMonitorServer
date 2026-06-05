@@ -43,7 +43,12 @@ from src.db.models import (
     MongoUnavailableError,
     MonitorProfile,
     ProfileAlreadyExistsError,
+    ProfileNotFoundError,
+    ProfileVersionConflictError,
     Scope,
+    fold_profiles,
+    utcnow,
+    validate_effective,
 )
 
 logger = structlog.get_logger(__name__)
@@ -58,17 +63,29 @@ _MONGO_UNAVAILABLE_EXC = (
 )
 
 
+def _specificity_rank(scope: Scope) -> int:
+    """0=global, 1=process, 2=process+model, 3=full — for base→specific fold."""
+    if scope.process == "*":
+        return 0
+    if scope.eqp_model == "*":
+        return 1
+    if scope.eqp_id == "*":
+        return 2
+    return 3
+
+
 class ProfileRepository:
     def __init__(self, collection: AsyncIOMotorCollection) -> None:
         self._collection = collection
-        # Bounded LRU + TTL cache prevents the unbounded growth we'd see with
-        # a plain dict under high eqpId cardinality.
+        # Bounded LRU + TTL cache of the *effective* (folded) profile, keyed by
+        # the (process, model, eqpId) bucket — prevents unbounded growth under
+        # high eqpId cardinality.
         self._resolve_cache: TTLCache[str, MonitorProfile] = TTLCache(
             maxsize=PROFILE_CACHE_MAX_SIZE, ttl=PROFILE_CACHE_TTL_SEC
         )
 
     # ------------------------------------------------------------------
-    # Create / upsert
+    # Create / write
     # ------------------------------------------------------------------
     async def create(self, profile: MonitorProfile) -> str:
         try:
@@ -77,82 +94,171 @@ class ProfileRepository:
             raise ProfileAlreadyExistsError(profile.scope) from e
         except _MONGO_UNAVAILABLE_EXC as e:
             raise MongoUnavailableError(f"create: {e}") from e
+        self._resolve_cache.clear()
         return str(result.inserted_id)
 
     async def upsert(self, profile: MonitorProfile) -> None:
-        """Replace-or-insert by scope. Clears the resolve cache on success."""
-        filter_ = self._scope_nested_filter(profile.scope)
+        """Unconditional replace-or-insert by exact scope (used by the seeder,
+        which is the system of record — no optimistic lock). Clears the cache."""
         try:
             await self._collection.replace_one(
-                filter_, profile.to_mongo(), upsert=True
+                self._scope_exact_filter(profile.scope), profile.to_mongo(), upsert=True
             )
         except _MONGO_UNAVAILABLE_EXC as e:
             raise MongoUnavailableError(f"upsert: {e}") from e
         self._resolve_cache.clear()
 
+    async def replace_with_version(
+        self, profile: MonitorProfile, expected_version: int
+    ) -> int:
+        """Optimistic-locked whole-overlay replace for operator edits.
+
+        Bumps ``governance.version`` to ``expected_version + 1`` and returns it.
+        Raises ``ProfileVersionConflictError`` on a stale version (409) or
+        ``ProfileNotFoundError`` if the scope has no document (404).
+        """
+        new_version = expected_version + 1
+        doc = profile.to_mongo()
+        doc["governance"]["version"] = new_version
+        # Refresh change-tracking metadata so governance reflects this edit
+        # (and so the seeder can tell an operator-edited profile from the
+        # code-owned default — see seed.seed_default_profile).
+        doc["governance"]["updated_at"] = utcnow().isoformat()
+        doc["governance"]["updated_by"] = "api"
+        try:
+            result = await self._collection.update_one(
+                {
+                    **self._scope_exact_filter(profile.scope),
+                    "governance.version": expected_version,
+                },
+                {"$set": doc},
+            )
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(f"replace_with_version: {e}") from e
+        if result.matched_count == 0:
+            await self._raise_write_conflict(profile.scope, expected_version)
+        self._resolve_cache.clear()
+        return new_version
+
+    async def delete_by_scope(
+        self, scope: Scope, expected_version: int | None = None
+    ) -> None:
+        """Delete a scope's overlay document. With ``expected_version`` the
+        delete is optimistic-locked (409 on stale, 404 if absent)."""
+        filter_ = self._scope_exact_filter(scope)
+        if expected_version is not None:
+            filter_["governance.version"] = expected_version
+        try:
+            result = await self._collection.delete_one(filter_)
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(f"delete_by_scope: {e}") from e
+        if result.deleted_count == 0:
+            await self._raise_write_conflict(scope, expected_version)
+        self._resolve_cache.clear()
+
+    async def _raise_write_conflict(
+        self, scope: Scope, expected_version: int | None
+    ) -> None:
+        """Disambiguate a no-op write: missing document → NotFound, present but
+        version-mismatched → VersionConflict."""
+        existing = await self.find_by_scope(scope)
+        if existing is None:
+            raise ProfileNotFoundError(scope)
+        raise ProfileVersionConflictError(scope, expected_version or 0)
+
     # ------------------------------------------------------------------
     # Lookup
     # ------------------------------------------------------------------
     async def find_by_scope(self, scope: Scope) -> MonitorProfile | None:
-        filter_ = self._scope_nested_filter(scope)
+        """Load the single overlay document for an *exact* scope triple."""
         try:
-            doc = await self._collection.find_one(filter_)
+            doc = await self._collection.find_one(self._scope_exact_filter(scope))
         except _MONGO_UNAVAILABLE_EXC as e:
             raise MongoUnavailableError(f"find_by_scope: {e}") from e
-        if doc is None:
-            return None
-        return MonitorProfile.from_mongo(doc)
+        return MonitorProfile.from_mongo(doc) if doc is not None else None
+
+    async def collect_scope_docs(
+        self, process: str, eqp_model: str, eqp_id: str
+    ) -> list[MonitorProfile]:
+        """Fetch every scope document covering (process, model, eqpId) in ONE
+        ``$or`` query, ordered base→specific (avoids N+1)."""
+        or_clauses = [
+            {"scope.process": p, "scope.eqpModel": m, "scope.eqpId": e}
+            for (p, m, e) in self._cascade_triples(process, eqp_model, eqp_id)
+        ]
+        try:
+            cursor = self._collection.find({"$or": or_clauses})
+            docs = await cursor.to_list(None)
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(f"collect_scope_docs: {e}") from e
+        profiles = [MonitorProfile.from_mongo(d) for d in docs]
+        profiles.sort(key=lambda p: _specificity_rank(p.scope))
+        return profiles
 
     async def resolve_profile(
         self, process: str, eqp_model: str, eqp_id: str
     ) -> MonitorProfile | None:
-        """Find the most specific profile covering (process, eqpModel, eqpId).
+        """Return the cascade-folded **effective** profile for an equipment.
 
-        Order of specificity (first hit wins):
-            1. exact eqpId match
-            2. exact (process, eqpModel)
-            3. process only
-            4. global wildcard (process="*")
-
-        ``find_by_scope`` already translates Mongo-unavailable errors, so
-        any raise here originates from a single ``find_by_scope`` call and
-        propagates as ``MongoUnavailableError``.
+        Collects all matching scope documents, folds them base→specific (narrower
+        wins whole-object; ``enabled`` AND-folded), validates reference integrity
+        on the result (logged, not raised — analysis must survive a bad overlay),
+        and caches the effective profile under the bucket key. Returns ``None``
+        when no scope document matches at all.
         """
         cache_key = f"{process}:{eqp_model}:{eqp_id}"
         cached = self._resolve_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        # Try each specificity level. This is N+1-safe because we cache.
-        candidates = [
-            Scope(process=process, eqp_model=eqp_model, eqp_id=eqp_id),
-            Scope(process=process, eqp_model=eqp_model),
-            Scope(process=process),
-            Scope(process="*"),
-        ]
-        for scope in candidates:
-            profile = await self.find_by_scope(scope)
-            if profile is not None:
-                self._resolve_cache[cache_key] = profile
-                return profile
-        return None
+        docs = await self.collect_scope_docs(process, eqp_model, eqp_id)
+        if not docs:
+            return None
+        effective = fold_profiles(
+            docs, Scope(process=process, eqp_model=eqp_model, eqp_id=eqp_id)
+        )
+        errors = validate_effective(effective)
+        if errors:
+            logger.warning(
+                "effective_profile_invalid",
+                process=process,
+                eqp_model=eqp_model,
+                eqp_id=eqp_id,
+                errors=errors,
+            )
+        self._resolve_cache[cache_key] = effective
+        return effective
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
-    def _scope_nested_filter(scope: Scope) -> dict[str, Any]:
-        """Translate a `Scope` into a nested-field filter (`scope.*`).
+    def _scope_exact_filter(scope: Scope) -> dict[str, Any]:
+        """Exact-triple identity filter (matches wildcards literally). Used for
+        single-document identity — find/replace/delete of one scope's overlay."""
+        return {
+            "scope.process": scope.process,
+            "scope.eqpModel": scope.eqp_model,
+            "scope.eqpId": scope.eqp_id,
+        }
 
-        Uses EQP_INFO field names (`eqpModel`, `eqpId`). Wildcard fields are
-        omitted rather than translated to regex.
-        """
-        filter_: dict[str, Any] = {"scope.process": scope.process}
-        if scope.eqp_model != "*":
-            filter_["scope.eqpModel"] = scope.eqp_model
-        if scope.eqp_id != "*":
-            filter_["scope.eqpId"] = scope.eqp_id
-        return filter_
+    @staticmethod
+    def _cascade_triples(
+        process: str, eqp_model: str, eqp_id: str
+    ) -> list[tuple[str, str, str]]:
+        """The exact ancestor scope triples to fold, broadest→narrowest, deduped."""
+        triples: list[tuple[str, str, str]] = [("*", "*", "*")]
+        if process != "*":
+            triples.append((process, "*", "*"))
+            if eqp_model != "*":
+                triples.append((process, eqp_model, "*"))
+                if eqp_id != "*":
+                    triples.append((process, eqp_model, eqp_id))
+        deduped: list[tuple[str, str, str]] = []
+        for t in triples:
+            if t not in deduped:
+                deduped.append(t)
+        return deduped
 
 
 class EqpInfoRepository:

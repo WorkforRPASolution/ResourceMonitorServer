@@ -84,34 +84,35 @@ async def cooldown_mgr(ns):
 
 
 async def test_set_then_check_cooldown(cooldown_mgr):
-    """SETEX + EXISTS sanity — cooling_down이 True/False를 정확히 반환."""
-    eqp, cat, met = "EQP_A", "cpu", "usage"
-    assert await cooldown_mgr.is_cooling_down(eqp, cat, met) is False
-    await cooldown_mgr.set_cooldown(eqp, cat, met, cooldown_minutes=1)
-    assert await cooldown_mgr.is_cooling_down(eqp, cat, met) is True
-    # 다른 metric은 영향 없음
-    assert await cooldown_mgr.is_cooling_down(eqp, cat, "memory") is False
+    """SETEX + EXISTS sanity — cooling_down이 True/False를 정확히 반환 (v2 5-dim 키)."""
+    args = ("CVD", "EQP_A", "@system", "default", "WARNING")
+    assert await cooldown_mgr.is_cooling_down(*args) is False
+    await cooldown_mgr.set_cooldown(*args, cooldown_minutes=1)
+    assert await cooldown_mgr.is_cooling_down(*args) is True
+    # 다른 severity 는 영향 없음 (severity 가 키에 포함됨)
+    assert await cooldown_mgr.is_cooling_down("CVD", "EQP_A", "@system", "default", "CRITICAL") is False
 
 
 async def test_cooldown_batch_pipeline(cooldown_mgr):
     """pipeline exists가 정확한 순서로 결과를 매핑해야 한다."""
-    await cooldown_mgr.set_cooldown("EQP_B1", "cpu", "usage", 1)
-    await cooldown_mgr.set_cooldown("EQP_B3", "mem", "free", 1)
+    await cooldown_mgr.set_cooldown("CVD", "EQP_B1", "@system", "default", "WARNING", 1)
+    await cooldown_mgr.set_cooldown("CVD", "EQP_B3", "@system", "default", "CRITICAL", 1)
     checks = [
-        ("EQP_B1", "cpu", "usage"),   # cooling
-        ("EQP_B2", "cpu", "usage"),   # not
-        ("EQP_B3", "mem", "free"),    # cooling
-        ("EQP_B4", "mem", "free"),    # not
+        ("CVD", "EQP_B1", "@system", "default", "WARNING"),   # cooling
+        ("CVD", "EQP_B2", "@system", "default", "WARNING"),   # not
+        ("CVD", "EQP_B3", "@system", "default", "CRITICAL"),  # cooling
+        ("CVD", "EQP_B4", "@system", "default", "CRITICAL"),  # not
     ]
     result = await cooldown_mgr.is_cooling_down_batch(checks)
-    assert result[("EQP_B1", "cpu", "usage")] is True
-    assert result[("EQP_B2", "cpu", "usage")] is False
-    assert result[("EQP_B3", "mem", "free")] is True
-    assert result[("EQP_B4", "mem", "free")] is False
+    assert result[checks[0]] is True
+    assert result[checks[1]] is False
+    assert result[checks[2]] is True
+    assert result[checks[3]] is False
 
 
 async def test_clear_cooldown_removes_key(cooldown_mgr):
-    await cooldown_mgr.set_cooldown("EQP_C", "disk", "io", 1)
-    assert await cooldown_mgr.is_cooling_down("EQP_C", "disk", "io") is True
-    await cooldown_mgr.clear_cooldown("EQP_C", "disk", "io")
-    assert await cooldown_mgr.is_cooling_down("EQP_C", "disk", "io") is False
+    args = ("CVD", "EQP_C", "@system", "default", "WARNING")
+    await cooldown_mgr.set_cooldown(*args, cooldown_minutes=1)
+    assert await cooldown_mgr.is_cooling_down(*args) is True
+    await cooldown_mgr.clear_cooldown(*args)
+    assert await cooldown_mgr.is_cooling_down(*args) is False

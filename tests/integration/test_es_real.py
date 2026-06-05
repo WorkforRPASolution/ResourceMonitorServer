@@ -170,9 +170,9 @@ def test_build_time_range_filter_shape():
     qb = QueryBuilder(settings)
     now = datetime(2026, 4, 8, 12, 0, 0, tzinfo=UTC)
     f = qb.build_time_range_filter(now, window_minutes=10)
-    assert f["range"]["@timestamp"]["lte"].startswith("2026-04-08T12:00:00")
-    assert f["range"]["@timestamp"]["gte"].startswith("2026-04-08T11:50:00")
-    assert f["range"]["@timestamp"]["format"] == "strict_date_optional_time"
+    assert f["range"]["EARS_TIMESTAMP"]["lte"].startswith("2026-04-08T12:00:00")
+    assert f["range"]["EARS_TIMESTAMP"]["gte"].startswith("2026-04-08T11:50:00")
+    assert f["range"]["EARS_TIMESTAMP"]["format"] == "strict_date_optional_time"
 
 
 # ----------------------------------------------------------------------

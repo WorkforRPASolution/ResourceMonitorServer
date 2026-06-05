@@ -28,7 +28,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 
-from src.api import admin, health
+from src.api import admin, health, profiles
 from src.api.metrics import STARTUP_COMPLETE, render_metrics
 from src.cache.cooldown import AlertCooldownManager
 from src.config.constants import (
@@ -339,6 +339,7 @@ async def metrics() -> Response:
 
 app.include_router(health.router)
 app.include_router(admin.router)
+app.include_router(profiles.router)
 
 
 if __name__ == "__main__":

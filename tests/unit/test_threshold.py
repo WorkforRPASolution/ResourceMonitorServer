@@ -1,101 +1,118 @@
-"""Tests for src.analyzer.threshold — threshold comparison and state checks."""
+"""Tests for src.analyzer.threshold — v2 rule evaluation."""
 from __future__ import annotations
 
 import pytest
 
-from src.analyzer.threshold import evaluate_state_check, evaluate_thresholds
-from src.db.models import ThresholdConfig
+from src.analyzer.threshold import evaluate_condition, evaluate_rule, op_compare
+from src.db.models import Condition, Rule
+
+pytestmark = pytest.mark.unit
+
+_CAT = {"cpu": "cpu", "disk": "disk", "proc": "process_watch", "volt": "voltage"}
 
 
-@pytest.mark.unit
-class TestEvaluateThresholds:
-    def _cfg(self, warning: float = 80.0, critical: float = 95.0) -> ThresholdConfig:
-        return ThresholdConfig(warning=warning, critical=critical, cooldown_minutes=30)
+def _rule(*conditions, combine="AND", severity="WARNING", rid="r"):
+    return Rule(
+        id=rid, interval_minutes=5, severity=severity, combine=combine,
+        when=list(conditions),
+    )
 
-    def test_no_breach_when_below_warning(self):
-        eqp_metrics = {"EQP1": {"cpu_load": 50.0}}
-        result = evaluate_thresholds(eqp_metrics, self._cfg(), ["cpu_load"])
-        assert result == []
 
-    def test_warning_breach_when_above_warning_below_critical(self):
-        eqp_metrics = {"EQP1": {"cpu_load": 85.0}}
-        result = evaluate_thresholds(eqp_metrics, self._cfg(), ["cpu_load"])
-        assert len(result) == 1
-        assert result[0].severity == "WARNING"
-        assert result[0].current_value == 85.0
-        assert result[0].threshold_value == 80.0
+def _eval(rule, facts):
+    return evaluate_rule(
+        rule, facts, eqp_id="E1", proc="@system", measure_category=_CAT
+    )
 
-    def test_critical_breach_when_above_critical(self):
-        eqp_metrics = {"EQP1": {"cpu_load": 98.0}}
-        result = evaluate_thresholds(eqp_metrics, self._cfg(), ["cpu_load"])
-        assert len(result) == 1
-        assert result[0].severity == "CRITICAL"
-        assert result[0].current_value == 98.0
-        assert result[0].threshold_value == 95.0
 
-    def test_critical_takes_precedence(self):
-        """When value >= critical, only CRITICAL breach is reported, not WARNING."""
-        eqp_metrics = {"EQP1": {"cpu_load": 95.0}}
-        result = evaluate_thresholds(eqp_metrics, self._cfg(), ["cpu_load"])
-        assert len(result) == 1
-        assert result[0].severity == "CRITICAL"
+class TestOpCompare:
+    @pytest.mark.parametrize("op,a,b,expected", [
+        (">=", 95, 95, True), (">=", 94, 95, False),
+        (">", 96, 95, True), (">", 95, 95, False),
+        ("<=", 5, 5, True), ("<", 4, 5, True),
+        ("==", 0, 0, True), ("!=", 1, 0, True),
+    ])
+    def test_numeric(self, op, a, b, expected):
+        assert op_compare(a, op, b) is expected
 
-    def test_none_value_skipped(self):
-        eqp_metrics = {"EQP1": {"cpu_load": None}}
-        result = evaluate_thresholds(eqp_metrics, self._cfg(), ["cpu_load"])
-        assert result == []
+    def test_none_value_is_false(self):
+        assert op_compare(None, ">=", 80) is False
 
-    def test_multiple_eqps_multiple_metrics(self):
-        eqp_metrics = {
-            "EQP1": {"cpu_load": 85.0, "mem_used": 96.0},
-            "EQP2": {"cpu_load": 50.0, "mem_used": 82.0},
-        }
-        result = evaluate_thresholds(
-            eqp_metrics, self._cfg(), ["cpu_load", "mem_used"]
+    def test_trend_string_equality(self):
+        assert op_compare("increasing", "trend==", "increasing") is True
+        assert op_compare("stable", "trend==", "increasing") is False
+
+
+class TestEvaluateCondition:
+    def test_any_one_instance_passes(self):
+        cond = Condition(fact="disk.max", op=">=", value=95, quantifier="any")
+        passed, rep = evaluate_condition(cond, [80.0, 96.0, 50.0])
+        assert passed is True and rep == 96.0
+
+    def test_all_requires_every_instance(self):
+        cond = Condition(fact="disk.max", op=">=", value=95, quantifier="all")
+        assert evaluate_condition(cond, [96.0, 97.0])[0] is True
+        assert evaluate_condition(cond, [96.0, 50.0])[0] is False
+
+    def test_all_empty_is_false(self):
+        cond = Condition(fact="disk.max", op=">=", value=95, quantifier="all")
+        assert evaluate_condition(cond, [None])[0] is False
+
+    def test_count_min(self):
+        cond = Condition(fact="disk.max", op=">=", value=95, quantifier="count", count_min=3)
+        assert evaluate_condition(cond, [96, 97, 98])[0] is True
+        assert evaluate_condition(cond, [96, 97, 50])[0] is False
+
+    def test_low_op_rep_is_min(self):
+        cond = Condition(fact="fan.min", op="<=", value=300, quantifier="any")
+        passed, rep = evaluate_condition(cond, [250.0, 280.0, 999.0])
+        assert passed is True and rep == 250.0
+
+
+class TestEvaluateRule:
+    def test_single_condition_breach(self):
+        rule = _rule(Condition(fact="cpu.max", op=">=", value=80))
+        breach = _eval(rule, {"cpu.max": [85.0]})
+        assert breach is not None
+        assert breach.rule_id == "r"
+        assert breach.severity == "WARNING"
+        assert breach.fact == "cpu.max"
+        assert breach.category == "cpu"
+        assert breach.current_value == 85.0
+        assert breach.threshold_value == 80
+        assert breach.eqp_id == "E1" and breach.proc == "@system"
+
+    def test_no_breach_returns_none(self):
+        rule = _rule(Condition(fact="cpu.max", op=">=", value=80))
+        assert _eval(rule, {"cpu.max": [50.0]}) is None
+
+    def test_combine_and_needs_all(self):
+        rule = _rule(
+            Condition(fact="cpu.p95", op=">", value=80),
+            Condition(fact="cpu.spike_count", op=">", value=5),
+            combine="AND",
         )
-        # EQP1: cpu WARNING + mem CRITICAL; EQP2: cpu none + mem WARNING
-        assert len(result) == 3
-        severities = {(b.eqp_id, b.metric, b.severity) for b in result}
-        assert ("EQP1", "cpu_load", "WARNING") in severities
-        assert ("EQP1", "mem_used", "CRITICAL") in severities
-        assert ("EQP2", "mem_used", "WARNING") in severities
+        assert _eval(rule, {"cpu.p95": [85.0], "cpu.spike_count": [7]}) is not None
+        assert _eval(rule, {"cpu.p95": [85.0], "cpu.spike_count": [2]}) is None
 
-    def test_empty_input_returns_empty(self):
-        result = evaluate_thresholds({}, self._cfg(), ["cpu_load"])
-        assert result == []
+    def test_combine_or_needs_any(self):
+        rule = _rule(
+            Condition(fact="volt.min", op="<", value=1.1),
+            Condition(fact="volt.max", op=">", value=1.4),
+            combine="OR",
+        )
+        breach = _eval(rule, {"volt.min": [1.5], "volt.max": [1.45]})
+        assert breach is not None and breach.fact == "volt.max"
 
+    def test_state_check_required_down_via_min_eq_zero(self):
+        rule = _rule(Condition(fact="proc.min", op="==", value=0), severity="CRITICAL")
+        breach = _eval(rule, {"proc.min": [0.0]})
+        assert breach is not None and breach.severity == "CRITICAL"
+        assert breach.category == "process_watch"
 
-@pytest.mark.unit
-class TestEvaluateStateCheck:
-    def test_state_check_required_down(self):
-        """Required process was down (min=0) -> CRITICAL breach."""
-        eqp_metrics = {"EQP1": {"required": 0.0}}
-        result = evaluate_state_check(eqp_metrics, "required", expected=1.0)
-        assert len(result) == 1
-        assert result[0].severity == "CRITICAL"
-        assert result[0].current_value == 0.0
+    def test_state_check_required_running_no_breach(self):
+        rule = _rule(Condition(fact="proc.min", op="==", value=0))
+        assert _eval(rule, {"proc.min": [1.0]}) is None
 
-    def test_state_check_required_running(self):
-        """Required process running (min=1) -> no breach."""
-        eqp_metrics = {"EQP1": {"required": 1.0}}
-        result = evaluate_state_check(eqp_metrics, "required", expected=1.0)
-        assert result == []
-
-    def test_state_check_forbidden_running(self):
-        """Forbidden process running (max=1) -> CRITICAL breach."""
-        eqp_metrics = {"EQP1": {"forbidden": 1.0}}
-        result = evaluate_state_check(eqp_metrics, "forbidden", expected=0.0)
-        assert len(result) == 1
-        assert result[0].severity == "CRITICAL"
-        assert result[0].current_value == 1.0
-
-    def test_state_check_forbidden_stopped(self):
-        """Forbidden process stopped (max=0) -> no breach."""
-        eqp_metrics = {"EQP1": {"forbidden": 0.0}}
-        result = evaluate_state_check(eqp_metrics, "forbidden", expected=0.0)
-        assert result == []
-
-    def test_state_check_none_skipped(self):
-        eqp_metrics = {"EQP1": {"required": None}}
-        result = evaluate_state_check(eqp_metrics, "required", expected=1.0)
-        assert result == []
+    def test_missing_fact_no_breach(self):
+        rule = _rule(Condition(fact="cpu.max", op=">=", value=80))
+        assert _eval(rule, {}) is None

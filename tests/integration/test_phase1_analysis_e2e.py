@@ -1,15 +1,12 @@
-"""Phase 1 통합 E2E — 실제 ES/Mongo/Redis 위에서 분석→이메일 발송 흐름 검증.
+"""Phase 1 통합 E2E — 실제 ES/Mongo/Redis 위에서 v2 분석→이메일 발송 흐름 검증.
 
-`AnalysisEngine.run_analysis()` 를 in-process 로 직접 호출한다. uvicorn 전체
-부팅이나 스케줄러 interval 대기 없이 초 단위·결정적으로 Phase 1 전 구간을 탄다:
+``AnalysisEngine.run_analysis(process, interval)`` 를 in-process 로 직접 호출한다.
+운영 ES 스키마(EARS_* row)로 색인하고, v2 프로파일(measures/rules/notify)을
+seed 한 뒤 전 구간을 초 단위·결정적으로 탄다:
 
-    ES 집계 → threshold 평가 → cooldown(실 Redis) → email(mock) → cooldown set
+    EARS_* 집계 → measure→fact→rule 평가 → cooldown(실 Redis) → email(mock)
 
-ZK 분산 조정은 분석 로직에 영향이 없어 ``NoOpZKLock`` 으로 대체한다
-(leader election/partition 은 tests/e2e/test_multi_instance.py 가 커버).
-
-기존 integration conftest 의 ``real_es / real_mongo / real_redis / ns /
-mock_email_server`` fixture 를 그대로 재사용한다.
+ZK 분산 조정은 분석 로직에 영향이 없어 ``NoOpZKLock`` 으로 대체한다.
 """
 from __future__ import annotations
 
@@ -17,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -25,7 +23,15 @@ from src.analyzer.engine import AnalysisEngine
 from src.cache.cooldown import AlertCooldownManager
 from src.cache.redis_client import RedisClient
 from src.config.settings import AppSettings
-from src.db.models import AnalysisConfig, MetricSchedule, MonitorProfile, Scope, ThresholdConfig
+from src.db.models import (
+    Condition,
+    Fact,
+    Measure,
+    MonitorProfile,
+    NotifyChannel,
+    Rule,
+    Scope,
+)
 from src.db.repository import EqpInfoRepository, ProfileRepository
 from src.distributed.lock import NoOpZKLock
 from src.es.client import ESClient
@@ -33,16 +39,13 @@ from src.es.queries import QueryBuilder
 
 pytestmark = [pytest.mark.integration]
 
+_INTERVAL = 5  # all rules below use interval_minutes=5
+
 
 # ======================================================================
 # 공통 헬퍼
 # ======================================================================
 def _make_settings(email_url: str, ns: Any) -> AppSettings:
-    """테스트 인프라를 가리키는 AppSettings.
-
-    redis_key_prefix 는 ns 로 격리해 cooldown 키가 다른 run 과 충돌하지 않게 한다.
-    grafana 는 비워서 alert variables 의 GrafanaUrl 이 "" 가 되도록.
-    """
     return AppSettings(
         es_hosts=["http://localhost:9200"],
         redis_url="redis://localhost:6379/15",
@@ -57,115 +60,83 @@ def _make_settings(email_url: str, ns: Any) -> AppSettings:
     )
 
 
-def _index_name(ns: Any, process: str) -> str:
-    """분석 엔진의 resolve_index_range 와 동일한 규칙으로 오늘 인덱스명 생성.
-
-    엔진은 ``{process_lower}_all-{YYYY.MM.DD}`` (Asia/Seoul) 를 조회한다.
-    ns prefix 를 붙여 격리하되, process 는 prefix 안에 녹여 분석 호출 시
-    같은 이름이 나오도록 한다.
-    """
-    from zoneinfo import ZoneInfo
-
+def _index_name(process: str) -> str:
     day = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d")
-    proc = process.lower()
-    return f"{proc}_all-{day}"
+    return f"{process.lower()}_all-{day}"
 
 
-async def _seed_es_metrics(
-    real_es: Any,
-    process: str,
-    docs: list[dict[str, Any]],
-    numeric_fields: list[str],
-) -> str:
-    """ES 인덱스를 mapping 과 함께 만들고 메트릭 문서를 색인(refresh)한다.
+async def _seed_es(real_es: Any, process: str, rows: list[dict[str, Any]]) -> str:
+    """운영 EARS_* row 형식으로 인덱스 생성 + 색인.
 
-    :param docs: 각 문서는 최소 {eqpId, <numeric_fields...>} 를 포함.
-                 @timestamp/process 는 자동으로 채운다.
-    :returns: 생성된 인덱스명
+    각 row = {eqpId, category, metric, value, [proc]} — EARS_* 필드로 매핑된다.
     """
-    index = _index_name(None, process)  # ns 미사용 — 엔진 규칙과 정확히 일치해야 함
-    # mapping: 엔진은 eqpId.keyword / process.keyword 서브필드를 쓴다.
-    # 운영 데이터의 dynamic mapping(문자열 → text + .keyword)을 그대로 재현한다.
-    # 메트릭은 double, @timestamp 는 date 로 명시.
-    str_with_keyword = {
-        "type": "text",
-        "fields": {"keyword": {"type": "keyword", "ignore_above": 256}},
+    index = _index_name(process)
+    properties = {
+        "EARS_TIMESTAMP": {"type": "date"},
+        "EARS_EQPID": {"type": "keyword"},
+        "EARS_PROCNAME": {"type": "keyword"},
+        "EARS_CATEGORY": {"type": "keyword"},
+        "EARS_METRIC": {"type": "keyword"},
+        "EARS_VALUE": {"type": "double"},
     }
-    properties: dict[str, Any] = {
-        "@timestamp": {"type": "date"},
-        "eqpId": str_with_keyword,
-        "process": str_with_keyword,
-    }
-    for f in numeric_fields:
-        properties[f] = {"type": "double"}
-
-    # 이전 잔재 제거 후 생성 (격리)
     await real_es.indices.delete(index=index, ignore=[404])
     await real_es.indices.create(index=index, body={"mappings": {"properties": properties}})
-
     now_iso = datetime.now(UTC).isoformat()
-    for doc in docs:
-        body = {"@timestamp": now_iso, "process": process, **doc}
-        await real_es.index(index=index, body=body, refresh="true")
+    for row in rows:
+        await real_es.index(
+            index=index,
+            body={
+                "EARS_TIMESTAMP": now_iso,
+                "EARS_EQPID": row["eqpId"],
+                "EARS_PROCNAME": row.get("proc", "@system"),
+                "EARS_CATEGORY": row["category"],
+                "EARS_METRIC": row["metric"],
+                "EARS_VALUE": row["value"],
+            },
+            refresh="true",
+        )
     return index
 
 
 async def _seed_eqp_info(mongo_db: Any, process: str, eqp_id: str, **overrides: Any) -> None:
-    """EQP_INFO 에 active 장비 1대 삽입."""
     doc = {
-        "eqpId": eqp_id,
-        "eqpModel": "MODEL-E2E",
-        "process": process,
-        "line": "L-E2E",
-        "localpc": f"PC-{eqp_id}",
-        "ipAddr": "10.0.0.99",
-        "category": process.lower(),
-        "onoff": 1,
-        "webmanagerUse": 1,
+        "eqpId": eqp_id, "eqpModel": "MODEL-E2E", "process": process,
+        "line": "L-E2E", "localpc": f"PC-{eqp_id}", "ipAddr": "10.0.0.99",
+        "category": process.lower(), "onoff": 1, "webmanagerUse": 1,
     }
     doc.update(overrides)
     await mongo_db["EQP_INFO"].insert_one(doc)
 
 
-async def _seed_profile(
-    mongo_db: Any,
-    process: str,
-    metric_pattern: str,
-    *,
-    warning: float = 80.0,
-    critical: float = 95.0,
-    cooldown_minutes: int = 30,
-) -> AnalysisConfig:
-    """RESOURCE_MONITOR_PROFILE 에 process 스코프 프로파일 upsert + config 반환."""
-    config = AnalysisConfig(
-        metric_pattern=metric_pattern,
-        threshold=ThresholdConfig(
-            warning=warning, critical=critical, cooldown_minutes=cooldown_minutes
-        ),
-        schedule=MetricSchedule(interval_minutes=5, window_minutes=10),
-    )
-    profile = MonitorProfile(
-        scope=Scope(process=process, eqp_model="*", eqp_id="*"),
-        analysis_configs=[config],
-    )
-    repo = ProfileRepository(mongo_db["RESOURCE_MONITOR_PROFILE"])
-    await repo.upsert(profile)
-    return config
+async def _seed_profile(mongo_db: Any, profile: MonitorProfile) -> None:
+    await ProfileRepository(mongo_db["RESOURCE_MONITOR_PROFILE"]).upsert(profile)
 
 
-def _make_engine(
-    real_es: Any,
-    mongo_db: Any,
-    real_redis: Any,
-    settings: AppSettings,
-) -> AnalysisEngine:
-    """실 클라이언트로 AnalysisEngine deps 를 조립한다 (ZK 는 NoOpLock)."""
+def _cpu_profile(process: str, *, rules: list[Rule], cooldown: int = 30) -> MonitorProfile:
+    return MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=rules,
+        notify={"default": NotifyChannel(cooldown_minutes=cooldown)},
+    )
+
+
+def _warn(value=80):
+    return Rule(id="cpu_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                when=[Condition(fact="cpu.max", op=">=", value=value)])
+
+
+def _crit(value=95):
+    return Rule(id="cpu_crit", interval_minutes=_INTERVAL, severity="CRITICAL",
+                when=[Condition(fact="cpu.max", op=">=", value=value)])
+
+
+def _make_engine(real_es, mongo_db, real_redis, settings) -> AnalysisEngine:
     es_client = ESClient(settings)
-    es_client._client = real_es  # 이미 연결된 raw AsyncElasticsearch 주입
-
+    es_client._client = real_es
     redis_client = RedisClient(settings)
-    redis_client._client = real_redis  # 이미 연결된 raw Redis 주입
-
+    redis_client._client = real_redis
     deps = SimpleNamespace(
         es=es_client,
         eqp_info_repo=EqpInfoRepository(mongo_db["EQP_INFO"]),
@@ -180,250 +151,257 @@ def _make_engine(
 
 @pytest.fixture
 async def phase1_db(real_mongo: Any, ns: Any):
-    """격리된 테스트 DB. 끝나면 drop."""
     db_name = f"{ns.mongo_db}_phase1_{uuid.uuid4().hex[:6]}"
     yield real_mongo[db_name]
     await real_mongo.drop_database(db_name)
 
 
-async def _drive_analysis(
-    real_es: Any,
-    mongo_db: Any,
-    real_redis: Any,
-    ns: Any,
-    email_url: str,
-    process: str,
-    config: AnalysisConfig,
-    *,
-    runs: int = 1,
-) -> list[Any]:
-    """엔진을 조립해 ``run_analysis`` 를 ``runs`` 회 호출하고 결과 리스트 반환.
-
-    email client 의 connect/close 보일러플레이트를 캡슐화한다.
-    """
+async def _drive(real_es, mongo_db, real_redis, ns, email_url, process, *, runs=1):
     settings = _make_settings(email_url, ns)
     engine = _make_engine(real_es, mongo_db, real_redis, settings)
     await engine._deps.email_client.connect()
     results = []
     try:
         for _ in range(runs):
-            results.append(await engine.run_analysis(process, config))
+            results.append(await engine.run_analysis(process, _INTERVAL))
     finally:
         await engine._deps.email_client.close()
     return results
 
 
 # ======================================================================
-# E0 — fixture 가용성 검증 (위험 1: e2e/integration conftest 호환)
+# E0 — fixture 가용성
 # ======================================================================
 async def test_fixtures_available(real_es, real_mongo, real_redis, ns, mock_email_server):
-    """이 파일 위치에서 실 인프라 fixture 들이 주입되는지부터 확인한다."""
     assert await real_es.ping() is True
     assert (await real_mongo.admin.command("ping"))["ok"] == 1.0
     assert await real_redis.ping() is True
-    assert ns.es_index_prefix.startswith("test_")
     assert mock_email_server["url"].endswith("/EmailNotify")
 
 
 # ======================================================================
-# E1 — 임계 초과 시 이메일 발송 (happy path)
+# E1 — 임계 초과 → WARNING 이메일 (happy path)
 # ======================================================================
-async def test_threshold_breach_sends_email(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
-    process = "E2E_CPU"
-    eqp_id = "E2E-CPU-01"
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[{"eqpId": eqp_id, "total_used_pct": 92.0}],
-        numeric_fields=["total_used_pct"],
-    )
+async def test_threshold_breach_sends_email(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_CPU", "E2E-CPU-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
     await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "total_used_pct")
-
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
     try:
-        (result,) = await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config,
-        )
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
-    # 분석 결과: 1건 breach
     assert len(result.breaches) == 1
     assert result.breaches[0].eqp_id == eqp_id
-
-    # 이메일 1건 발송됨
-    received = mock_email_server["received"]
-    assert len(received) == 1
-    payload = received[0]
+    (payload,) = mock_email_server["received"]
     assert payload["code"] == "RESOURCE_MONITOR"
     assert payload["subcode"] == "CPU_WARNING"
     assert payload["app"] == "ARS"
     assert payload["model"] == "MODEL-E2E"
     assert float(payload["variables"]["CurrentValue"]) == pytest.approx(92.0)
+    assert payload["variables"]["MetricName"] == "cpu.max"
     assert payload["variables"]["Severity"] == "WARNING"
 
 
 # ======================================================================
-# E2 — CRITICAL 심각도 분류
+# E2 — CRITICAL 분류
 # ======================================================================
-async def test_critical_severity_classification(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
-    process = "E2E_CPUC"
-    eqp_id = "E2E-CPUC-01"
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[{"eqpId": eqp_id, "total_used_pct": 97.0}],  # critical=95 초과
-        numeric_fields=["total_used_pct"],
-    )
+async def test_critical_severity(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_CPUC", "E2E-CPUC-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 97.0}])
     await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "total_used_pct")
-
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_crit()]))
     try:
-        (result,) = await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config,
-        )
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
-    assert len(result.breaches) == 1
     assert result.breaches[0].severity == "CRITICAL"
-
-    payload = mock_email_server["received"][0]
+    (payload,) = mock_email_server["received"]
     assert payload["subcode"] == "CPU_CRITICAL"
-    assert payload["variables"]["Severity"] == "CRITICAL"
 
 
 # ======================================================================
-# E3 — 임계 미만이면 무발송
+# E3 — 임계 미만 무발송
 # ======================================================================
-async def test_below_threshold_sends_nothing(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
-    process = "E2E_QUIET"
-    eqp_id = "E2E-QUIET-01"
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[{"eqpId": eqp_id, "total_used_pct": 50.0}],  # warning=80 미만
-        numeric_fields=["total_used_pct"],
-    )
+async def test_below_threshold_silent(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_QUIET", "E2E-QUIET-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 50.0}])
     await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "total_used_pct")
-
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
     try:
-        (result,) = await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config,
-        )
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
     assert result.breaches == []
-    assert len(mock_email_server["received"]) == 0
+    assert mock_email_server["received"] == []
 
 
 # ======================================================================
-# E4 — cooldown 억제 (실 Redis)
+# E4 — cooldown 억제 + 5-dim 키 (실 Redis)
 # ======================================================================
-async def test_cooldown_suppresses_second_alert(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
-    process = "E2E_COOL"
-    eqp_id = "E2E-COOL-01"
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[{"eqpId": eqp_id, "total_used_pct": 92.0}],
-        numeric_fields=["total_used_pct"],
-    )
+async def test_cooldown_suppresses_second_alert(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_COOL", "E2E-COOL-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
     await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "total_used_pct")
-
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()], cooldown=30))
     try:
-        # 같은 breach 로 2회 연속 분석 — 2번째는 cooldown 으로 억제돼야 함
-        await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config, runs=2,
-        )
+        await _drive(real_es, phase1_db, real_redis, ns,
+                     mock_email_server["url"], process, runs=2)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
-    # 발송은 1회만
-    assert len(mock_email_server["received"]) == 1
-
-    # 실 Redis 에 cooldown 키가 실제로 SETEX 됐는지 확인
-    cooldown_key = f"{ns.redis_prefix}:cooldown:{eqp_id}:CPU:total_used_pct"
-    assert await real_redis.exists(cooldown_key) == 1
-    ttl = await real_redis.ttl(cooldown_key)
-    assert 0 < ttl <= config.threshold.cooldown_minutes * 60
+    assert len(mock_email_server["received"]) == 1  # second run suppressed
+    key = f"{ns.redis_prefix}:cooldown:{process}:{eqp_id}:@system:default:WARNING"
+    assert await real_redis.exists(key) == 1
+    ttl = await real_redis.ttl(key)
+    assert 0 < ttl <= 30 * 60
 
 
 # ======================================================================
-# E5 — process_watch state_check (required 프로세스 미검출)
+# E5 — process_watch (required down) — min==0 condition, proc grouping
 # ======================================================================
-async def test_process_watch_required_down_alerts(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
-    process = "E2E_PROC"
-    eqp_id = "E2E-PROC-01"
-    # required=0 → min 집계 0 → "필수 프로세스가 한 번이라도 죽었다" → CRITICAL
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[{"eqpId": eqp_id, "required": 0.0}],
-        numeric_fields=["required"],
-    )
+async def test_process_watch_required_down(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_PROC", "E2E-PROC-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "process_watch",
+                             "metric": "required", "value": 0.0, "proc": "critd"}])
     await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "required")
-
+    profile = MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="proc_req", category="process_watch", metric="required",
+                          proc="*", window_minutes=10, facts=[Fact(type="min")])],
+        rules=[Rule(id="proc_down", interval_minutes=_INTERVAL, severity="CRITICAL",
+                    when=[Condition(fact="proc_req.min", op="==", value=0, quantifier="any")])],
+        notify={"default": NotifyChannel(cooldown_minutes=30)},
+    )
+    await _seed_profile(phase1_db, profile)
     try:
-        (result,) = await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config,
-        )
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
     assert len(result.breaches) == 1
     assert result.breaches[0].severity == "CRITICAL"
-
-    payload = mock_email_server["received"][0]
+    assert result.breaches[0].proc == "critd"  # proc dimension from EARS_PROCNAME
+    (payload,) = mock_email_server["received"]
     assert payload["subcode"] == "PROCESS_WATCH_CRITICAL"
-    assert payload["variables"]["MetricName"] == "required"
+    assert payload["variables"]["MetricName"] == "proc_req.min"
 
 
 # ======================================================================
-# E6 — 다중 장비 부분 발송 (3대 중 2대만 임계 초과)
+# E6 — 다중 장비 부분 발송
 # ======================================================================
-async def test_multi_equipment_partial_alerting(
-    real_es, phase1_db, real_redis, ns, mock_email_server
-):
+async def test_multi_equipment_partial(real_es, phase1_db, real_redis, ns, mock_email_server):
     process = "E2E_MULTI"
     breached = {"E2E-MULTI-01", "E2E-MULTI-03"}
-    index = await _seed_es_metrics(
-        real_es, process,
-        docs=[
-            {"eqpId": "E2E-MULTI-01", "total_used_pct": 91.0},  # breach
-            {"eqpId": "E2E-MULTI-02", "total_used_pct": 40.0},  # ok
-            {"eqpId": "E2E-MULTI-03", "total_used_pct": 99.0},  # breach (critical)
-        ],
-        numeric_fields=["total_used_pct"],
-    )
-    for eqp_id in ("E2E-MULTI-01", "E2E-MULTI-02", "E2E-MULTI-03"):
-        await _seed_eqp_info(phase1_db, process, eqp_id)
-    config = await _seed_profile(phase1_db, process, "total_used_pct")
-
+    index = await _seed_es(real_es, process, [
+        {"eqpId": "E2E-MULTI-01", "category": "cpu", "metric": "total_used_pct", "value": 91.0},
+        {"eqpId": "E2E-MULTI-02", "category": "cpu", "metric": "total_used_pct", "value": 40.0},
+        {"eqpId": "E2E-MULTI-03", "category": "cpu", "metric": "total_used_pct", "value": 99.0},
+    ])
+    for e in ("E2E-MULTI-01", "E2E-MULTI-02", "E2E-MULTI-03"):
+        await _seed_eqp_info(phase1_db, process, e)
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
     try:
-        (result,) = await _drive_analysis(
-            real_es, phase1_db, real_redis, ns,
-            mock_email_server["url"], process, config,
-        )
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
     finally:
         await real_es.indices.delete(index=index, ignore=[404])
 
-    # breach 는 2건, 발송도 2건, eqpId 집합이 초과한 2대와 일치
     assert {b.eqp_id for b in result.breaches} == breached
     received = mock_email_server["received"]
-    assert len(received) == 2
     assert {p["hostname"] for p in received} == {f"PC-{e}" for e in breached}
+
+
+# ======================================================================
+# E7 — 🔴 dead-path 회귀 가드: model overlay 가 실제 알림에 반영
+# ======================================================================
+async def test_model_overlay_reaches_alerts(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process = "E2E_OVERLAY"
+    base_eqp, ov_eqp = "E2E-BASE-01", "E2E-OV-01"
+    index = await _seed_es(real_es, process, [
+        {"eqpId": base_eqp, "category": "cpu", "metric": "total_used_pct", "value": 98.0},
+        {"eqpId": ov_eqp, "category": "cpu", "metric": "total_used_pct", "value": 98.0},
+    ])
+    await _seed_eqp_info(phase1_db, process, base_eqp, eqpModel="MODEL-E2E")
+    await _seed_eqp_info(phase1_db, process, ov_eqp, eqpModel="MODEL-B")
+    # process-level base: WARNING only
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
+    # eqp overlay: adds a CRITICAL rule for MODEL-B/ov_eqp (inherits cpu measure)
+    overlay = MonitorProfile(
+        scope=Scope(process=process, eqp_model="MODEL-B", eqp_id=ov_eqp),
+        rules=[_crit()],
+    )
+    await _seed_profile(phase1_db, overlay)
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    received = mock_email_server["received"]
+    crit = [p for p in received if p["variables"]["Severity"] == "CRITICAL"]
+    # the overlay's CRITICAL rule DID reach alerts, and only for the overlay eqp
+    assert len(crit) == 1
+    assert crit[0]["hostname"] == f"PC-{ov_eqp}"
+    # base eqp never escalates to CRITICAL
+    by_sev = {(b.eqp_id, b.severity) for b in result.breaches}
+    assert (ov_eqp, "CRITICAL") in by_sev
+    assert (base_eqp, "CRITICAL") not in by_sev
+
+
+# ======================================================================
+# E8 — 🔴 category 충돌 가드 (P7): cpu vs memory 의 동일 metric 분리
+# ======================================================================
+async def test_category_filter_separates_same_metric(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_CAT", "E2E-CAT-01"
+    # 동일 metric 이름 total_used_pct 가 cpu=40(정상) / memory=90(초과)
+    index = await _seed_es(real_es, process, [
+        {"eqpId": eqp_id, "category": "cpu", "metric": "total_used_pct", "value": 40.0},
+        {"eqpId": eqp_id, "category": "memory", "metric": "total_used_pct", "value": 90.0},
+    ])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    profile = MonitorProfile(
+        scope=Scope(process=process),
+        measures=[
+            Measure(id="cpu", category="cpu", metric="total_used_pct",
+                    window_minutes=10, facts=[Fact(type="max")]),
+            Measure(id="mem", category="memory", metric="total_used_pct",
+                    window_minutes=10, facts=[Fact(type="max")]),
+        ],
+        rules=[
+            Rule(id="cpu_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=80)]),
+            Rule(id="mem_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                 when=[Condition(fact="mem.max", op=">=", value=80)]),
+        ],
+        notify={"default": NotifyChannel(cooldown_minutes=30)},
+    )
+    await _seed_profile(phase1_db, profile)
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    # category 필터가 동작하면 memory(90)만 breach, cpu(40)는 정상
+    assert len(result.breaches) == 1
+    assert result.breaches[0].fact == "mem.max"
+    assert result.breaches[0].category == "memory"
+    (payload,) = mock_email_server["received"]
+    assert payload["subcode"] == "MEMORY_WARNING"

@@ -1,19 +1,83 @@
-"""Elasticsearch query builders for metric analysis.
+"""Elasticsearch query builders for v2 metric analysis.
 
-Phase 0 scope: index range resolution + basic time range filter.
-Aggregation builders (terms/percentile/range union for baseline) are stubbed
-and will be fleshed out in Phase 1 analysis.
+The real production documents are **EARS rows** (PRD §7.2): one document per
+(equipment, metric, sample) carrying ``EARS_CATEGORY`` / ``EARS_METRIC`` /
+``EARS_VALUE`` / ``EARS_EQPID`` / ``EARS_PROCNAME`` / ``EARS_TIMESTAMP``. The
+metric identity is therefore a *filter* (term on EARS_CATEGORY + EARS_METRIC),
+not a top-level numeric field; every fact aggregates the single ``EARS_VALUE``
+column. The EARS_* string fields are mapped as ``keyword`` (no text+.keyword
+subfield), so term filters and terms aggregations target the bare field name.
+
+Aggregation nesting (outer→inner):
+    by_eqp (terms EARS_EQPID)
+      └─ by_proc (terms EARS_PROCNAME)         # only when measure.proc == "*"
+           └─ by_metric (terms EARS_METRIC)    # only when expand == "instance"
+                └─ one sub-agg per fact, keyed by the fact's type name
+``src.analyzer.es_parser`` mirrors this nesting; the sub-agg key (= fact type
+name) is the contract between the two modules.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.analyzer import fact_catalog as fc
 from src.config.settings import AppSettings
+
+# EARS_* field roles (PRD §7.2). All keyword fields are queried by bare name.
+TS_FIELD = "EARS_TIMESTAMP"
+VALUE_FIELD = "EARS_VALUE"
+CATEGORY_FIELD = "EARS_CATEGORY"
+METRIC_FIELD = "EARS_METRIC"
+PROC_FIELD = "EARS_PROCNAME"
+EQP_FIELD = "EARS_EQPID"
+
+
+def build_fact_sub_aggs(facts: Iterable[Any]) -> dict[str, dict]:
+    """Build the leaf sub-aggregations (one per fact) over ``EARS_VALUE``.
+
+    Each fact is keyed by its type name (e.g. ``"max"``, ``"p95"``,
+    ``"spike_count"``). Only Phase-1 strategies are emitted; Phase 2/3 facts are
+    skipped here (the engine never asks for them).
+    """
+    sub: dict[str, dict] = {}
+    for fact in facts:
+        ftype = fact.type
+        name = ftype.value
+        strat = fc.agg_strategy(ftype)
+        if strat is fc.AggStrategy.STAT:
+            sub[name] = {fc.STAT_AGG_NAME[ftype]: {"field": VALUE_FIELD}}
+        elif strat is fc.AggStrategy.PERCENTILES:
+            sub[name] = {
+                "percentiles": {
+                    "field": VALUE_FIELD,
+                    "percents": [fc.PERCENTILE_OF_FACT[ftype]],
+                }
+            }
+        elif strat is fc.AggStrategy.TOP_HITS:
+            sub[name] = {
+                "top_hits": {
+                    "size": 1,
+                    "sort": [{TS_FIELD: {"order": "desc"}}],
+                    "_source": [VALUE_FIELD],
+                }
+            }
+        elif strat is fc.AggStrategy.FILTER_RANGE:
+            rng = {"gte": fact.over} if fact.direction == "above" else {"lte": fact.over}
+            sub[name] = {"filter": {"range": {VALUE_FIELD: rng}}}
+        # Phase 2/3 strategies (date_histogram / extended_stats / baseline) are
+        # not emitted — those facts are engine-skipped until implemented.
+    return sub
 
 
 class QueryBuilder:
     """Stateless helper. Holds `AppSettings` only to read `local_tz`."""
+
+    _TERMS_AGG_SIZE = 30000  # 20K PCs + headroom
+    _METRIC_TERMS_SIZE = 1000  # distinct metric instances per equipment
+    _PROC_TERMS_SIZE = 1000  # distinct procnames per equipment
 
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -24,11 +88,10 @@ class QueryBuilder:
     def resolve_index_range(self, process: str, time_range_minutes: int) -> str:
         """Return comma-separated index pattern covering the query window.
 
-        Index naming convention: ``{process_lower}_all-{YYYY.MM.DD}`` (one per day).
-        If the window crosses midnight in ``local_tz``, return two day indexes;
-        otherwise return a single day index.
-
-        ES 7.x accepts comma-separated lists as-is in the `index` parameter.
+        Index naming convention: ``{process_lower}_all-{YYYY.MM.DD}`` (one per
+        day). If the window crosses midnight in ``local_tz``, return two day
+        indexes; otherwise a single day index. ES 7.x accepts comma-separated
+        lists as-is in the ``index`` parameter.
         """
         tz = ZoneInfo(self._settings.local_tz)
         now = datetime.now(tz)
@@ -43,19 +106,12 @@ class QueryBuilder:
     # ------------------------------------------------------------------
     # Query fragments
     # ------------------------------------------------------------------
-    def build_time_range_filter(
-        self, now: datetime, window_minutes: int
-    ) -> dict:
-        """Return an ES `range` filter on `@timestamp` for the trailing window.
-
-        Timestamps are emitted in the caller-supplied timezone-aware ISO8601
-        format. ES 7.x `strict_date_optional_time` parses this without extra
-        format hints.
-        """
+    def build_time_range_filter(self, now: datetime, window_minutes: int) -> dict:
+        """ES ``range`` filter on ``EARS_TIMESTAMP`` for the trailing window."""
         start = now - timedelta(minutes=window_minutes)
         return {
             "range": {
-                "@timestamp": {
+                TS_FIELD: {
                     "gte": start.isoformat(),
                     "lte": now.isoformat(),
                     "format": "strict_date_optional_time",
@@ -63,58 +119,88 @@ class QueryBuilder:
             }
         }
 
-    # ------------------------------------------------------------------
-    # Phase 1: metric aggregation query
-    # ------------------------------------------------------------------
-    _TERMS_AGG_SIZE = 30000  # 20K PCs + headroom
+    def build_metric_names_query(
+        self, now: datetime, window_minutes: int, category: str, proc: str = "@system"
+    ) -> dict:
+        """``size=0`` query enumerating the distinct ``EARS_METRIC`` values for a
+        category (used to resolve wildcard metric patterns to instances)."""
+        filters: list[dict] = [
+            self.build_time_range_filter(now, window_minutes),
+            {"term": {CATEGORY_FIELD: category}},
+        ]
+        if proc != "*":
+            filters.append({"term": {PROC_FIELD: proc}})
+        return {
+            "size": 0,
+            "query": {"bool": {"filter": filters}},
+            "aggs": {
+                "metrics": {
+                    "terms": {"field": METRIC_FIELD, "size": self._METRIC_TERMS_SIZE}
+                }
+            },
+        }
 
+    # ------------------------------------------------------------------
+    # Phase 1: metric aggregation query (EARS_* rows)
+    # ------------------------------------------------------------------
     def build_metric_aggregation_query(
         self,
         now: datetime,
+        *,
         window_minutes: int,
-        metric_fields: list[str],
-        agg_types: dict[str, str] | None = None,
-        process: str | None = None,
+        category: str,
+        metrics: list[str],
+        proc: str,
+        facts: Iterable[Any],
+        expand_instance: bool = False,
+        eqp_ids: list[str] | None = None,
     ) -> dict:
-        """Build an ES 7.x search body for metric aggregation.
+        """Build an ES 7.x ``size=0`` search body for one measure's facts.
 
-        Returns a ``size=0`` query with a ``terms`` aggregation on
-        ``eqpId.keyword`` and one sub-aggregation per metric field.
-        The sub-aggregation type (max/min/avg) is determined by
-        ``agg_types``; defaults to ``max`` if not specified.
-
-        ``process`` adds a term filter on ``process.keyword`` as a safety
-        guard — the index pattern already scopes to a single process, but
-        this prevents cross-contamination if the naming convention changes.
+        ``metrics`` are the concrete EARS_METRIC instance names to include (a
+        single-element list for a scalar measure, the resolved instances for a
+        wildcard one). ``proc == "*"`` groups by EARS_PROCNAME instead of
+        filtering it. ``expand_instance`` groups by EARS_METRIC so each instance
+        is a separate quantifier sample. ``eqp_ids`` optionally restricts the
+        terms aggregation to one equipment bucket.
         """
-        if agg_types is None:
-            agg_types = {}
+        facts = list(facts)
+        leaf = build_fact_sub_aggs(facts)
 
-        sub_aggs: dict = {}
-        for field in metric_fields:
-            agg = agg_types.get(field, "max")
-            sub_aggs[f"{field}_{agg}"] = {agg: {"field": field}}
+        inner: dict = leaf
+        if expand_instance:
+            inner = {
+                "by_metric": {
+                    "terms": {"field": METRIC_FIELD, "size": self._METRIC_TERMS_SIZE},
+                    "aggs": inner,
+                }
+            }
+        if proc == "*":
+            inner = {
+                "by_proc": {
+                    "terms": {"field": PROC_FIELD, "size": self._PROC_TERMS_SIZE},
+                    "aggs": inner,
+                }
+            }
 
         filters: list[dict] = [
             self.build_time_range_filter(now, window_minutes),
+            {"term": {CATEGORY_FIELD: category}},
         ]
-        if process is not None:
-            filters.append({"term": {"process.keyword": process}})
+        if metrics:
+            filters.append({"terms": {METRIC_FIELD: metrics}})
+        if proc != "*":
+            filters.append({"term": {PROC_FIELD: proc}})
+        if eqp_ids:
+            filters.append({"terms": {EQP_FIELD: eqp_ids}})
 
         return {
             "size": 0,
-            "query": {
-                "bool": {
-                    "filter": filters,
-                }
-            },
+            "query": {"bool": {"filter": filters}},
             "aggs": {
                 "by_eqp": {
-                    "terms": {
-                        "field": "eqpId.keyword",
-                        "size": self._TERMS_AGG_SIZE,
-                    },
-                    "aggs": sub_aggs,
+                    "terms": {"field": EQP_FIELD, "size": self._TERMS_AGG_SIZE},
+                    "aggs": inner,
                 }
             },
         }

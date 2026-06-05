@@ -26,6 +26,7 @@ from elasticsearch import AsyncElasticsearch
 from elasticsearch.exceptions import NotFoundError
 
 from src.config.settings import AppSettings
+from src.es.queries import CATEGORY_FIELD, METRIC_FIELD, PROC_FIELD
 
 logger = structlog.get_logger(__name__)
 
@@ -36,15 +37,11 @@ _INTROSPECT_POSITIVE_TTL = 600  # 10 min
 _INTROSPECT_NEGATIVE_TTL = 300  # 5 min
 _INTROSPECT_CACHE_MAXSIZE = 500
 
-# Phase 1: ES field types that represent numeric values.
-_NUMERIC_ES_TYPES = frozenset({
-    "float", "half_float", "scaled_float", "double",
-    "integer", "long", "short", "byte",
-})
+_METRIC_NAMES_TERMS_SIZE = 1000  # distinct EARS_METRIC values per category
 
-# Sentinel for negative caching of get_numeric_field_names — distinguishes
+# Sentinel for negative caching of get_metric_names — distinguishes
 # "we queried and got nothing" from "we never queried".
-_NUMERIC_FIELDS_EMPTY: list[str] = []
+_METRIC_NAMES_EMPTY: list[str] = []
 
 
 class ESClient:
@@ -82,12 +79,12 @@ class ESClient:
         self._introspect_negative: TTLCache[str, bool] = TTLCache(
             ttl=introspect_negative_ttl, **cache_kwargs
         )
-        # Phase 1: separate cache for get_numeric_field_names (keyed by
-        # index_pattern only, unlike the per-field introspect caches).
-        self._numeric_fields_positive: TTLCache[str, list[str]] = TTLCache(
+        # v2: cache for get_metric_names (keyed by index+category+proc),
+        # same dual-TTL strategy as the per-field introspect caches.
+        self._metric_names_positive: TTLCache[str, list[str]] = TTLCache(
             ttl=introspect_positive_ttl, **cache_kwargs
         )
-        self._numeric_fields_negative: TTLCache[str, bool] = TTLCache(
+        self._metric_names_negative: TTLCache[str, bool] = TTLCache(
             ttl=introspect_negative_ttl, **cache_kwargs
         )
 
@@ -182,41 +179,49 @@ class ESClient:
         self._introspect_negative[cache_key] = True
         return "unknown"
 
-    async def get_numeric_field_names(self, index_pattern: str) -> list[str]:
-        """Return all numeric field names from the index mapping.
+    async def get_metric_names(
+        self, index_pattern: str, category: str, proc: str = "@system"
+    ) -> list[str]:
+        """Return the distinct ``EARS_METRIC`` values for a category (+proc).
 
-        Phase 1 uses this to resolve metric pattern wildcards against actual
-        ES fields. Cached with the same dual-TTL strategy as
-        ``introspect_field_type``: positive (10 min) for stable mappings,
-        negative (5 min) for missing indices that may appear after roll.
+        v2 resolves wildcard metric patterns against the metric *instances* that
+        actually exist, discovered by a ``terms`` aggregation on EARS_METRIC
+        rather than the index mapping (every metric shares the EARS_VALUE
+        column). Cached with the dual-TTL strategy: positive (10 min) for stable
+        instance sets, negative (5 min) for missing indices that appear after a
+        nightly roll. ``proc == "*"`` discovers across all procnames.
         """
-        if index_pattern in self._numeric_fields_positive:
-            return self._numeric_fields_positive[index_pattern]
-        if index_pattern in self._numeric_fields_negative:
-            return _NUMERIC_FIELDS_EMPTY
+        cache_key = f"{index_pattern}:{category}:{proc}"
+        if cache_key in self._metric_names_positive:
+            return self._metric_names_positive[cache_key]
+        if cache_key in self._metric_names_negative:
+            return _METRIC_NAMES_EMPTY
 
+        filters: list[dict] = [{"term": {CATEGORY_FIELD: category}}]
+        if proc != "*":
+            filters.append({"term": {PROC_FIELD: proc}})
+        body = {
+            "size": 0,
+            "query": {"bool": {"filter": filters}},
+            "aggs": {
+                "metrics": {
+                    "terms": {"field": METRIC_FIELD, "size": _METRIC_NAMES_TERMS_SIZE}
+                }
+            },
+        }
         try:
-            mapping = await self.client.indices.get_mapping(
-                index=index_pattern, allow_no_indices=True
+            resp = await self.client.search(index=index_pattern, body=body)
+            buckets = (
+                resp.get("aggregations", {}).get("metrics", {}).get("buckets", [])
             )
-            fields: set[str] = set()
-            for idx_data in mapping.values():
-                props = idx_data.get("mappings", {}).get("properties", {})
-                for name, meta in props.items():
-                    if meta.get("type") in _NUMERIC_ES_TYPES:
-                        fields.add(name)
-            result = sorted(fields)
-            self._numeric_fields_positive[index_pattern] = result
+            result = sorted(b["key"] for b in buckets)
+            self._metric_names_positive[cache_key] = result
             return result
         except NotFoundError:
-            logger.warning(
-                "es_index_not_found_for_numeric_fields", pattern=index_pattern
-            )
+            logger.warning("es_index_not_found_for_metric_names", pattern=index_pattern)
         except Exception as e:
             logger.warning(
-                "es_get_numeric_fields_failed",
-                pattern=index_pattern,
-                error=str(e),
+                "es_get_metric_names_failed", pattern=index_pattern, error=str(e)
             )
-        self._numeric_fields_negative[index_pattern] = True
-        return _NUMERIC_FIELDS_EMPTY
+        self._metric_names_negative[cache_key] = True
+        return _METRIC_NAMES_EMPTY

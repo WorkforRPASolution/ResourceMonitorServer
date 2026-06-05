@@ -266,105 +266,79 @@ class TestIntrospectFieldType:
 
 
 # ----------------------------------------------------------------------
-# Phase 1: get_numeric_field_names
+# v2: get_metric_names (distinct EARS_METRIC via terms agg)
 # ----------------------------------------------------------------------
 @pytest.mark.unit
-class TestGetNumericFieldNames:
-    _MAPPING_MIXED = {
-        "cvd_all-2026.04.10": {
-            "mappings": {
-                "properties": {
-                    "@timestamp": {"type": "date"},
-                    "hostname": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-                    "process": {"type": "keyword"},
-                    "eqpId": {"type": "keyword"},
-                    "total_used_pct": {"type": "float"},
-                    "cpu0_core_load": {"type": "integer"},
-                    "mem_total_used_size": {"type": "long"},
-                    "gpu_temp": {"type": "half_float"},
-                    "required": {"type": "byte"},
-                    "category": {"type": "keyword"},
-                }
+class TestGetMetricNames:
+    @staticmethod
+    def _resp(*names):
+        return {
+            "aggregations": {
+                "metrics": {"buckets": [{"key": n, "doc_count": 1} for n in names]}
             }
         }
-    }
 
-    async def test_returns_numeric_fields_only(self, settings):
+    async def test_returns_distinct_metric_names_sorted(self, settings):
         client = ESClient(settings)
         client._client = AsyncMock()
-        client._client.indices.get_mapping.return_value = self._MAPPING_MIXED
-        result = await client.get_numeric_field_names("cvd_all-*")
-        assert set(result) == {
-            "total_used_pct", "cpu0_core_load", "mem_total_used_size",
-            "gpu_temp", "required",
-        }
-        # Non-numeric excluded
-        assert "hostname" not in result
-        assert "@timestamp" not in result
-        assert "process" not in result
-        assert "category" not in result
+        client._client.search.return_value = self._resp("D:", "C:", "E:")
+        result = await client.get_metric_names("cvd_all-*", "disk")
+        assert result == ["C:", "D:", "E:"]
 
-    async def test_caches_result(self, settings):
+    async def test_query_filters_category_and_proc(self, settings):
         client = ESClient(settings)
         client._client = AsyncMock()
-        client._client.indices.get_mapping.return_value = self._MAPPING_MIXED
-        r1 = await client.get_numeric_field_names("cvd_all-*")
-        r2 = await client.get_numeric_field_names("cvd_all-*")
+        client._client.search.return_value = self._resp("total_used_pct")
+        await client.get_metric_names("cvd_all-*", "cpu", proc="@system")
+        body = client._client.search.call_args.kwargs["body"]
+        filters = body["query"]["bool"]["filter"]
+        assert {"term": {"EARS_CATEGORY": "cpu"}} in filters
+        assert {"term": {"EARS_PROCNAME": "@system"}} in filters
+        assert body["aggs"]["metrics"]["terms"]["field"] == "EARS_METRIC"
+
+    async def test_wildcard_proc_omits_proc_filter(self, settings):
+        client = ESClient(settings)
+        client._client = AsyncMock()
+        client._client.search.return_value = self._resp("required")
+        await client.get_metric_names("cvd_all-*", "process_watch", proc="*")
+        filters = client._client.search.call_args.kwargs["body"]["query"]["bool"]["filter"]
+        assert all("EARS_PROCNAME" not in f.get("term", {}) for f in filters)
+
+    async def test_caches_by_index_category_proc(self, settings):
+        client = ESClient(settings)
+        client._client = AsyncMock()
+        client._client.search.return_value = self._resp("a", "b")
+        r1 = await client.get_metric_names("cvd_all-*", "cpu")
+        r2 = await client.get_metric_names("cvd_all-*", "cpu")
         assert r1 == r2
-        assert client._client.indices.get_mapping.call_count == 1
+        assert client._client.search.call_count == 1
+        # different category -> separate cache entry -> new call
+        await client.get_metric_names("cvd_all-*", "disk")
+        assert client._client.search.call_count == 2
 
-    async def test_returns_empty_on_not_found_error(self, settings):
+    async def test_returns_empty_on_not_found(self, settings):
         client = ESClient(settings)
         client._client = AsyncMock()
-        client._client.indices.get_mapping.side_effect = NotFoundError(
-            "no such index", {}, {}
-        )
-        result = await client.get_numeric_field_names("missing_all-*")
-        assert result == []
+        client._client.search.side_effect = NotFoundError("no such index", {}, {})
+        assert await client.get_metric_names("missing_all-*", "cpu") == []
 
     async def test_returns_empty_on_generic_exception(self, settings):
         client = ESClient(settings)
         client._client = AsyncMock()
-        client._client.indices.get_mapping.side_effect = ConnectionError("boom")
-        result = await client.get_numeric_field_names("cvd_all-*")
-        assert result == []
+        client._client.search.side_effect = ConnectionError("boom")
+        assert await client.get_metric_names("cvd_all-*", "cpu") == []
 
     async def test_negative_cache_with_short_ttl(self, settings):
-        """Empty result (NotFoundError) is negative-cached for 5 min."""
         clock = _ManualClock()
         client = ESClient(settings, introspect_timer=clock)
         client._client = AsyncMock()
-        client._client.indices.get_mapping.side_effect = NotFoundError(
-            "no such index", {}, {}
-        )
-        r1 = await client.get_numeric_field_names("cvd_all-*")
-        assert r1 == []
-        # Still cached at 4 min
+        client._client.search.side_effect = NotFoundError("no such index", {}, {})
+        assert await client.get_metric_names("cvd_all-*", "cpu") == []
         clock.advance(240)
-        r2 = await client.get_numeric_field_names("cvd_all-*")
-        assert client._client.indices.get_mapping.call_count == 1
-        # Expired at 6 min — retries
-        clock.advance(120)
-        client._client.indices.get_mapping.side_effect = None
-        client._client.indices.get_mapping.return_value = self._MAPPING_MIXED
-        r3 = await client.get_numeric_field_names("cvd_all-*")
-        assert len(r3) == 5
-        assert client._client.indices.get_mapping.call_count == 2
-
-    async def test_handles_multi_index_mapping(self, settings):
-        """When multiple indices match, collect fields from all of them."""
-        client = ESClient(settings)
-        client._client = AsyncMock()
-        client._client.indices.get_mapping.return_value = {
-            "cvd_all-2026.04.09": {
-                "mappings": {"properties": {"total_used_pct": {"type": "float"}}}
-            },
-            "cvd_all-2026.04.10": {
-                "mappings": {"properties": {
-                    "total_used_pct": {"type": "float"},
-                    "cpu0_core_load": {"type": "integer"},
-                }}
-            },
-        }
-        result = await client.get_numeric_field_names("cvd_all-*")
-        assert set(result) == {"total_used_pct", "cpu0_core_load"}
+        await client.get_metric_names("cvd_all-*", "cpu")
+        assert client._client.search.call_count == 1  # still negative-cached
+        clock.advance(120)  # past 5-min negative TTL
+        client._client.search.side_effect = None
+        client._client.search.return_value = self._resp("x")
+        assert await client.get_metric_names("cvd_all-*", "cpu") == ["x"]
+        assert client._client.search.call_count == 2

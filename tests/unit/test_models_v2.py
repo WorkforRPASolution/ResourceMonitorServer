@@ -113,6 +113,13 @@ class TestCondition:
         c = Condition(fact="disk.max", op=">=", value=85, quantifier="count", count_min=3)
         assert c.count_min == 3
 
+    def test_count_min_must_be_positive(self):
+        # count_min=0 would make 'n >= 0' always true → silent always-alert
+        with pytest.raises(ValidationError):
+            Condition(fact="disk.max", op=">=", value=85, quantifier="count", count_min=0)
+        with pytest.raises(ValidationError):
+            Condition(fact="disk.max", op=">=", value=85, quantifier="count", count_min=-1)
+
     def test_trend_op_requires_string_value(self):
         c = Condition(fact="m.trend", op="trend==", value="increasing")
         assert c.value == "increasing"

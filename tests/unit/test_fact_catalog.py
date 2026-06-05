@@ -55,6 +55,41 @@ class TestAllowedOps:
         assert not fc.op_allowed(FactType.TREND, ">=")
 
 
+class TestAggStrategy:
+    def test_every_facttype_has_strategy(self):
+        assert set(fc.AGG_STRATEGY) == set(FactType)
+
+    def test_stat_facts(self):
+        for t in (FactType.MAX, FactType.MIN, FactType.AVG):
+            assert fc.agg_strategy(t) is fc.AggStrategy.STAT
+        assert fc.STAT_AGG_NAME[FactType.MAX] == "max"
+        assert fc.STAT_AGG_NAME[FactType.MIN] == "min"
+        assert fc.STAT_AGG_NAME[FactType.AVG] == "avg"
+
+    def test_percentile_facts(self):
+        for t in (FactType.P50, FactType.P90, FactType.P95, FactType.P99):
+            assert fc.agg_strategy(t) is fc.AggStrategy.PERCENTILES
+        assert fc.PERCENTILE_OF_FACT[FactType.P95] == 95.0
+        assert set(fc.PERCENTILE_OF_FACT) == {
+            FactType.P50, FactType.P90, FactType.P95, FactType.P99
+        }
+
+    def test_last_is_top_hits(self):
+        assert fc.agg_strategy(FactType.LAST) is fc.AggStrategy.TOP_HITS
+
+    def test_spike_is_filter_range(self):
+        assert fc.agg_strategy(FactType.SPIKE_COUNT) is fc.AggStrategy.FILTER_RANGE
+
+    def test_phase1_strategies_are_implementable(self):
+        impl = {
+            fc.AggStrategy.STAT, fc.AggStrategy.PERCENTILES,
+            fc.AggStrategy.TOP_HITS, fc.AggStrategy.FILTER_RANGE,
+        }
+        for t in FactType:
+            if fc.is_implemented(t):
+                assert fc.agg_strategy(t) in impl
+
+
 class TestParamRequirementSets:
     def test_needs_bucketing(self):
         assert FactType.MOVING_AVG in fc.NEEDS_BUCKETING

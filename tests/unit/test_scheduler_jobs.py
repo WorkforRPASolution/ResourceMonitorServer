@@ -233,31 +233,27 @@ class TestDebugProcessesResolution:
 class TestSchedulerReload:
     def _make_deps_with_profile(self):
         from src.db.models import (
-            AnalysisConfig,
-            MetricSchedule,
+            Condition,
+            Fact,
+            Measure,
             MonitorProfile,
+            NotifyChannel,
+            Rule,
             Scope,
-            ThresholdConfig,
         )
 
+        # two rules at two distinct intervals → one job per (process, interval)
         profile = MonitorProfile(
             scope=Scope(process="*"),
-            analysis_configs=[
-                AnalysisConfig(
-                    metric_pattern="total_used_pct",
-                    threshold=ThresholdConfig(
-                        warning=80, critical=95, cooldown_minutes=30
-                    ),
-                    schedule=MetricSchedule(interval_minutes=5, window_minutes=10),
-                ),
-                AnalysisConfig(
-                    metric_pattern="*_core_load",
-                    threshold=ThresholdConfig(
-                        warning=85, critical=97, cooldown_minutes=30
-                    ),
-                    schedule=MetricSchedule(interval_minutes=10, window_minutes=15),
-                ),
+            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                              window_minutes=15, facts=[Fact(type="max")])],
+            rules=[
+                Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=80)]),
+                Rule(id="cpu_slow", interval_minutes=10, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=70)]),
             ],
+            notify={"default": NotifyChannel(cooldown_minutes=30)},
         )
         deps = SimpleNamespace(
             es=MagicMock(),
@@ -272,7 +268,7 @@ class TestSchedulerReload:
         )
         return deps
 
-    async def test_reload_registers_jobs_for_processes(self):
+    async def test_reload_registers_jobs_per_process_interval(self):
         deps = self._make_deps_with_profile()
         sched = AnalysisScheduler(
             AppSettings(scheduler_misfire_grace_time=60), deps
@@ -282,12 +278,12 @@ class TestSchedulerReload:
 
         jobs = sched._scheduler.get_jobs()
         job_ids = {j.id for j in jobs}
-        # 2 processes × 2 analysis_configs = 4 jobs
+        # 2 processes × 2 distinct intervals = 4 jobs
         assert len(jobs) == 4
-        assert "analysis-CVD-total_used_pct" in job_ids
-        assert "analysis-CVD-*_core_load" in job_ids
-        assert "analysis-ETCH-total_used_pct" in job_ids
-        assert "analysis-ETCH-*_core_load" in job_ids
+        assert "analysis-CVD-5m" in job_ids
+        assert "analysis-CVD-10m" in job_ids
+        assert "analysis-ETCH-5m" in job_ids
+        assert "analysis-ETCH-10m" in job_ids
         await sched.shutdown(timeout=1.0)
 
     async def test_reload_removes_old_jobs_first(self):
@@ -298,11 +294,10 @@ class TestSchedulerReload:
         await sched.start()
         await sched.reload(["CVD"])
         assert len(sched._scheduler.get_jobs()) == 2
-        # Reload with different process
         await sched.reload(["ETCH"])
         job_ids = {j.id for j in sched._scheduler.get_jobs()}
-        assert "analysis-CVD-total_used_pct" not in job_ids
-        assert "analysis-ETCH-total_used_pct" in job_ids
+        assert "analysis-CVD-5m" not in job_ids
+        assert "analysis-ETCH-5m" in job_ids
         await sched.shutdown(timeout=1.0)
 
     async def test_reload_skips_process_with_no_profile(self):
@@ -327,6 +322,6 @@ class TestSchedulerReload:
         await sched.start()
         await sched.reload()  # no processes arg → debug mode resolution
         job_ids = {j.id for j in sched._scheduler.get_jobs()}
-        assert "analysis-PVD-total_used_pct" in job_ids
-        assert "analysis-PVD-*_core_load" in job_ids
+        assert "analysis-PVD-5m" in job_ids
+        assert "analysis-PVD-10m" in job_ids
         await sched.shutdown(timeout=1.0)

@@ -130,3 +130,58 @@ def is_implemented(fact_type: FactType) -> bool:
 def op_allowed(fact_type: FactType, op: str) -> bool:
     """True if ``op`` is semantically valid for ``fact_type``."""
     return op in ALLOWED_OPS[fact_type]
+
+
+# ----------------------------------------------------------------------
+# ES aggregation strategy per fact type (drives es.queries + es_parser)
+# ----------------------------------------------------------------------
+class AggStrategy(StrEnum):
+    """How a fact is computed from ``EARS_VALUE`` in Elasticsearch."""
+
+    STAT = "stat"                   # single-metric agg (max/min/avg) -> .value
+    PERCENTILES = "percentiles"     # percentiles agg -> .values["<pct>.0"]
+    TOP_HITS = "top_hits"           # last: newest doc's EARS_VALUE
+    FILTER_RANGE = "filter_range"   # spike_count: filter{range} -> .doc_count
+    DATE_HISTOGRAM = "date_histogram"  # Phase 2 time-bucketed (duration/growth/ma/trend)
+    EXTENDED_STATS = "extended_stats"  # Phase 2 zscore (avg + std_deviation)
+    BASELINE_QUERY = "baseline_query"  # Phase 3 baseline_dev (separate past-index query)
+
+
+AGG_STRATEGY: dict[FactType, AggStrategy] = {
+    FactType.MAX: AggStrategy.STAT,
+    FactType.MIN: AggStrategy.STAT,
+    FactType.AVG: AggStrategy.STAT,
+    FactType.LAST: AggStrategy.TOP_HITS,
+    FactType.P50: AggStrategy.PERCENTILES,
+    FactType.P90: AggStrategy.PERCENTILES,
+    FactType.P95: AggStrategy.PERCENTILES,
+    FactType.P99: AggStrategy.PERCENTILES,
+    FactType.SPIKE_COUNT: AggStrategy.FILTER_RANGE,
+    FactType.DURATION: AggStrategy.DATE_HISTOGRAM,
+    FactType.DELTA: AggStrategy.TOP_HITS,
+    FactType.GROWTH_RATE: AggStrategy.DATE_HISTOGRAM,
+    FactType.MOVING_AVG: AggStrategy.DATE_HISTOGRAM,
+    FactType.TREND: AggStrategy.DATE_HISTOGRAM,
+    FactType.ZSCORE: AggStrategy.EXTENDED_STATS,
+    FactType.BASELINE_DEV: AggStrategy.BASELINE_QUERY,
+}
+
+# ES single-metric aggregation name for STAT-strategy facts.
+STAT_AGG_NAME: dict[FactType, str] = {
+    FactType.MAX: "max",
+    FactType.MIN: "min",
+    FactType.AVG: "avg",
+}
+
+# percentile number for PERCENTILES-strategy facts.
+PERCENTILE_OF_FACT: dict[FactType, float] = {
+    FactType.P50: 50.0,
+    FactType.P90: 90.0,
+    FactType.P95: 95.0,
+    FactType.P99: 99.0,
+}
+
+
+def agg_strategy(fact_type: FactType) -> AggStrategy:
+    """ES aggregation strategy used to compute ``fact_type``."""
+    return AGG_STRATEGY[fact_type]

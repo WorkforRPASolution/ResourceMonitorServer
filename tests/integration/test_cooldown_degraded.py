@@ -91,22 +91,23 @@ async def test_cooldown_degraded_mode_prevents_flood(ns, redis_lifecycle):
     prefix = f"{ns.redis_prefix}_degraded1"
     client, mgr = await _make_cooldown_mgr(ns, prefix)
     try:
-        eqp, cat, met = "EQP_DEG", "cpu", "usage"
+        args = ("CVD", "EQP_DEG", "@system", "default", "WARNING")
+        other = ("CVD", "EQP_DEG", "@system", "default", "CRITICAL")
         # 정상 모드 sanity
-        assert await mgr.is_cooling_down(eqp, cat, met) is False
+        assert await mgr.is_cooling_down(*args) is False
 
         # Redis 중단
         _docker("stop", REDIS_CONTAINER)
         try:
             # 1. set_cooldown은 Redis 실패해도 local에 기록되어야 함
-            await mgr.set_cooldown(eqp, cat, met, cooldown_minutes=5)
+            await mgr.set_cooldown(*args, cooldown_minutes=5)
             # 2. is_cooling_down은 local fallback으로 True 반환
-            assert await mgr.is_cooling_down(eqp, cat, met) is True
+            assert await mgr.is_cooling_down(*args) is True
             # 3. 다른 키는 여전히 False (local에 없음)
-            assert await mgr.is_cooling_down(eqp, cat, "memory") is False
+            assert await mgr.is_cooling_down(*other) is False
             # 4. 이메일 폭주 방지: 10번 반복해도 모두 True
             for _ in range(10):
-                assert await mgr.is_cooling_down(eqp, cat, met) is True
+                assert await mgr.is_cooling_down(*args) is True
         finally:
             _docker("start", REDIS_CONTAINER)
             await _wait_redis_ready("redis://localhost:6379/15")
@@ -125,20 +126,20 @@ async def test_cooldown_post_recovery(ns, redis_lifecycle):
     try:
         # 다운 상태에서 local에 기록
         _docker("stop", REDIS_CONTAINER)
-        await mgr.set_cooldown("EQP_R1", "cpu", "usage", cooldown_minutes=5)
-        assert await mgr.is_cooling_down("EQP_R1", "cpu", "usage") is True
+        await mgr.set_cooldown("CVD", "EQP_R1", "@system", "default", "WARNING", cooldown_minutes=5)
+        assert await mgr.is_cooling_down("CVD", "EQP_R1", "@system", "default", "WARNING") is True
 
         # 복구
         _docker("start", REDIS_CONTAINER)
         await _wait_redis_ready("redis://localhost:6379/15")
 
         # 새 set_cooldown은 Redis로 감
-        await mgr.set_cooldown("EQP_R2", "mem", "free", cooldown_minutes=5)
-        assert await mgr.is_cooling_down("EQP_R2", "mem", "free") is True
+        await mgr.set_cooldown("CVD", "EQP_R2", "@system", "default", "WARNING", cooldown_minutes=5)
+        assert await mgr.is_cooling_down("CVD", "EQP_R2", "@system", "default", "WARNING") is True
 
         # Redis에 직접 쿼리해 키 존재 확인 (local이 아닌 Redis에서)
-        # cooldown key format: {prefix}:cooldown:{eqp}:{cat}:{met}
-        raw_key = f"{prefix}:cooldown:EQP_R2:mem:free"
+        # v2 cooldown key format: {prefix}:cooldown:{process}:{eqp}:{proc}:{notify}:{severity}
+        raw_key = f"{prefix}:cooldown:CVD:EQP_R2:@system:default:WARNING"
         assert await client.client.exists(raw_key) > 0
     finally:
         await client.close()
@@ -152,23 +153,23 @@ async def test_cooldown_batch_degraded(ns, redis_lifecycle):
     client, mgr = await _make_cooldown_mgr(ns, prefix)
     try:
         # 정상 상태에서 하나를 local+Redis에 기록, 다른 하나는 기록 안 함
-        await mgr.set_cooldown("EQP_B1", "cpu", "usage", cooldown_minutes=5)
+        await mgr.set_cooldown("CVD", "EQP_B1", "@system", "default", "WARNING", cooldown_minutes=5)
 
         _docker("stop", REDIS_CONTAINER)
         try:
             # degraded 상태에서 또 하나 추가 (local only)
-            await mgr.set_cooldown("EQP_B2", "mem", "free", cooldown_minutes=5)
+            await mgr.set_cooldown("CVD", "EQP_B2", "@system", "default", "WARNING", cooldown_minutes=5)
 
             # batch check — 두 개 True, 하나 False
             checks = [
-                ("EQP_B1", "cpu", "usage"),
-                ("EQP_B2", "mem", "free"),
-                ("EQP_B3", "disk", "io"),
+                ("CVD", "EQP_B1", "@system", "default", "WARNING"),
+                ("CVD", "EQP_B2", "@system", "default", "WARNING"),
+                ("CVD", "EQP_B3", "@system", "default", "WARNING"),
             ]
             result = await mgr.is_cooling_down_batch(checks)
-            assert result[("EQP_B1", "cpu", "usage")] is True
-            assert result[("EQP_B2", "mem", "free")] is True
-            assert result[("EQP_B3", "disk", "io")] is False
+            assert result[checks[0]] is True
+            assert result[checks[1]] is True
+            assert result[checks[2]] is False
         finally:
             _docker("start", REDIS_CONTAINER)
             await _wait_redis_ready("redis://localhost:6379/15")

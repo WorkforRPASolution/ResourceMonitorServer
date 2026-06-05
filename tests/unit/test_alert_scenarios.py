@@ -66,8 +66,8 @@ def test_build_process_scenario_signals_down():
     req = build_alert("process", app_name="ARS")
 
     assert req.subcode.startswith(ALERT_CATEGORY_PROCESS_WATCH + "_")
-    # 필수 프로세스 미검출 → metric 이 "required" 계열
-    assert req.variables["MetricName"] in ("required", "forbidden")
+    # 필수 프로세스 미검출 → fact 가 "required" 계열 measure 를 가리킴
+    assert "required" in req.variables["MetricName"]
 
 
 # ----------------------------------------------------------------------

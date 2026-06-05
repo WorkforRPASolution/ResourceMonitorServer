@@ -13,12 +13,15 @@ import pytest
 from src.config.constants import COLL_PROFILE
 from src.config.settings import AppSettings
 from src.db.models import (
-    AnalysisConfig,
-    MetricSchedule,
+    Condition,
+    Fact,
+    Measure,
     MonitorProfile,
+    NotifyChannel,
     ProfileAlreadyExistsError,
+    ProfileVersionConflictError,
+    Rule,
     Scope,
-    ThresholdConfig,
 )
 from src.db.repository import EqpInfoRepository, ProfileRepository
 from src.db.seed import build_default_profile, seed_default_profile
@@ -117,21 +120,24 @@ async def test_scope_alias_persists_as_eqpModel(fresh_mongo_db):
     assert "eqp_model" not in raw["scope"]
 
 
+def _v2_profile(scope, *, rules=None, version=1):
+    return MonitorProfile(
+        scope=scope,
+        governance={"version": version},
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=15, facts=[Fact(type="max")])],
+        rules=rules if rules is not None else [
+            Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=80)])
+        ],
+        notify={"default": NotifyChannel(cooldown_minutes=30)},
+    )
+
+
 async def test_find_by_scope_roundtrip(fresh_mongo_db):
     coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
     repo = ProfileRepository(coll)
-    original = MonitorProfile(
-        scope=Scope(process="CVD", eqp_model="AMAT_02", eqp_id="CVD_001"),
-        analysis_configs=[
-            AnalysisConfig(
-                metric_pattern="total_used_pct",
-                threshold=ThresholdConfig(
-                    warning=75.0, critical=92.0, cooldown_minutes=20
-                ),
-                schedule=MetricSchedule(interval_minutes=3, window_minutes=6),
-            )
-        ],
-    )
+    original = _v2_profile(Scope(process="CVD", eqp_model="AMAT_02", eqp_id="CVD_001"))
     await repo.upsert(original)
 
     found = await repo.find_by_scope(original.scope)
@@ -139,9 +145,45 @@ async def test_find_by_scope_roundtrip(fresh_mongo_db):
     assert found.scope.process == "CVD"
     assert found.scope.eqp_model == "AMAT_02"  # alias 역변환 OK
     assert found.scope.eqp_id == "CVD_001"
-    assert len(found.analysis_configs) == 1
-    assert found.analysis_configs[0].threshold.warning == 75.0
+    assert [m.id for m in found.measures] == ["cpu"]
+    assert found.rules[0].when[0].value == 80
     assert found.id is not None  # _id → str 변환됨
+
+
+async def test_resolve_profile_cascade_fold(fresh_mongo_db):
+    """회귀 가드(dead-path): global + eqp overlay 가 fold 되어 effective 에 둘 다 반영."""
+    coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
+    repo = ProfileRepository(coll)
+    await repo.create(_v2_profile(Scope(process="*")))
+    overlay = MonitorProfile(
+        scope=Scope(process="CVD", eqp_model="M", eqp_id="E1"),
+        rules=[Rule(id="cpu_crit", interval_minutes=5, severity="CRITICAL",
+                    when=[Condition(fact="cpu.max", op=">=", value=95)])],
+    )
+    await repo.create(overlay)
+
+    effective = await repo.resolve_profile("CVD", "M", "E1")
+    assert {r.id for r in effective.rules} == {"cpu_warn", "cpu_crit"}
+    assert [m.id for m in effective.measures] == ["cpu"]  # inherited from global
+
+
+async def test_optimistic_lock_conflict(fresh_mongo_db):
+    """version mismatch → ProfileVersionConflictError; 정상 버전 → bump."""
+    coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
+    repo = ProfileRepository(coll)
+    await repo.create(_v2_profile(Scope(process="CVD"), version=1))
+
+    # stale version → conflict
+    with pytest.raises(ProfileVersionConflictError):
+        await repo.replace_with_version(_v2_profile(Scope(process="CVD")), expected_version=99)
+
+    # correct version → bump to 2
+    new_version = await repo.replace_with_version(
+        _v2_profile(Scope(process="CVD")), expected_version=1
+    )
+    assert new_version == 2
+    stored = await repo.find_by_scope(Scope(process="CVD"))
+    assert stored.governance.version == 2
 
 
 # ----------------------------------------------------------------------
