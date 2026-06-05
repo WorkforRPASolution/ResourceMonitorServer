@@ -181,7 +181,7 @@ class AnalysisEngine:
             return {}
 
         index = self._deps.query_builder.resolve_index_range(
-            process, measure.window_minutes
+            process, measure.window_minutes, now=now
         )
         expand = measure.expand == "instance"
         if expand:

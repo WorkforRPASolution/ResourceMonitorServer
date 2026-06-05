@@ -19,9 +19,8 @@ name) is the contract between the two modules.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from src.analyzer import fact_catalog as fc
 from src.config.settings import AppSettings
@@ -73,7 +72,8 @@ def build_fact_sub_aggs(facts: Iterable[Any]) -> dict[str, dict]:
 
 
 class QueryBuilder:
-    """Stateless helper. Holds `AppSettings` only to read `local_tz`."""
+    """Stateless ES query builder. (`AppSettings` is retained for construction
+    compatibility; index dates are computed in UTC, see `resolve_index_range`.)"""
 
     _TERMS_AGG_SIZE = 30000  # 20K PCs + headroom
     _METRIC_TERMS_SIZE = 1000  # distinct metric instances per equipment
@@ -85,16 +85,26 @@ class QueryBuilder:
     # ------------------------------------------------------------------
     # Index resolution
     # ------------------------------------------------------------------
-    def resolve_index_range(self, process: str, time_range_minutes: int) -> str:
+    def resolve_index_range(
+        self, process: str, time_range_minutes: int, *, now: datetime | None = None
+    ) -> str:
         """Return comma-separated index pattern covering the query window.
 
         Index naming convention: ``{process_lower}_all-{YYYY.MM.DD}`` (one per
-        day). If the window crosses midnight in ``local_tz``, return two day
-        indexes; otherwise a single day index. ES 7.x accepts comma-separated
-        lists as-is in the ``index`` parameter.
+        day). **The daily rollover is on the UTC calendar** — verified against
+        production: ``{process}_all-YYYY.MM.DD`` holds ``EARS_TIMESTAMP`` from
+        ``00:00:00Z`` to ``23:59:59Z``. The index date is therefore computed in
+        UTC — the same clock as the ``EARS_TIMESTAMP`` range filter
+        (``build_time_range_filter``). Dating the index in ``local_tz`` instead
+        made RMS open the wrong day's index during the local↔UTC date skew
+        (e.g. KST 00:00–09:00 → an empty/not-yet-created index → blind analysis).
+
+        ``now`` defaults to ``datetime.now(UTC)``; the engine passes its own UTC
+        ``now`` so index selection and the time-range filter share one clock.
+        If the window crosses UTC midnight, two day indexes are returned. ES 7.x
+        accepts the comma-separated list as-is in the ``index`` parameter.
         """
-        tz = ZoneInfo(self._settings.local_tz)
-        now = datetime.now(tz)
+        now = now or datetime.now(UTC)
         start = now - timedelta(minutes=time_range_minutes)
         proc = process.lower()
         end_day = now.strftime("%Y.%m.%d")

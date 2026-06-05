@@ -35,9 +35,10 @@ class TestResolveIndexRange:
         with time_machine.travel(NOW):
             assert qb.resolve_index_range("CVD", 5) == "cvd_all-2026.04.07"
 
-    def test_crosses_midnight_returns_two_indexes(self, qb):
+    def test_crosses_utc_midnight_returns_two_indexes(self, qb):
+        # window straddles UTC midnight → both UTC days (indices roll over on UTC)
         with time_machine.travel(
-            datetime(2026, 4, 7, 0, 2, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+            datetime(2026, 4, 7, 0, 2, 0, tzinfo=ZoneInfo("UTC"))
         ):
             assert qb.resolve_index_range("CVD", 5) == (
                 "cvd_all-2026.04.06,cvd_all-2026.04.07"
@@ -47,9 +48,20 @@ class TestResolveIndexRange:
         with time_machine.travel(NOW):
             assert qb.resolve_index_range("ETCH", 5) == "etch_all-2026.04.07"
 
-    def test_respects_configured_timezone(self, qb):
+    def test_index_date_uses_utc_not_local_tz(self, qb):
+        # PROD bug guard: daily indices roll over on the UTC calendar (verified:
+        # {proc}_all-YYYY.MM.DD holds EARS_TIMESTAMP 00:00:00Z–23:59:59Z). At UTC
+        # 15:30 (= KST 00:30 next day) the data lives in the UTC-date index. qb is
+        # built with local_tz="Asia/Seoul" to prove the local tz never leaks into
+        # the index date (else KST 00:00–09:00 → wrong/empty index → blind).
         with time_machine.travel(datetime(2026, 4, 6, 15, 30, 0, tzinfo=ZoneInfo("UTC"))):
-            assert qb.resolve_index_range("CVD", 5) == "cvd_all-2026.04.07"
+            assert qb.resolve_index_range("CVD", 5) == "cvd_all-2026.04.06"
+
+    def test_accepts_explicit_utc_now(self, qb):
+        # engine passes its own UTC `now` so the index date and the
+        # EARS_TIMESTAMP range filter share a single clock.
+        now = datetime(2026, 4, 6, 15, 30, 0, tzinfo=ZoneInfo("UTC"))
+        assert qb.resolve_index_range("CVD", 5, now=now) == "cvd_all-2026.04.06"
 
 
 class TestBuildTimeRangeFilter:

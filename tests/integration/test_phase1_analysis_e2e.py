@@ -14,7 +14,6 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -61,7 +60,10 @@ def _make_settings(email_url: str, ns: Any) -> AppSettings:
 
 
 def _index_name(process: str) -> str:
-    day = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d")
+    # Indices roll over on the UTC calendar (same clock resolve_index_range +
+    # the EARS_TIMESTAMP filter use). Seed docs carry a UTC timestamp, so the
+    # index must be named by the UTC date to match what the engine queries.
+    day = datetime.now(UTC).strftime("%Y.%m.%d")
     return f"{process.lower()}_all-{day}"
 
 

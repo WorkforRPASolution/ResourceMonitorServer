@@ -334,7 +334,7 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 
 운영 ES 문서는 **EARS row**입니다(PRD §7.2). 메트릭마다 top-level numeric 필드를 두는 게 아니라 **(장비, 메트릭, 샘플)당 한 행**이고, 메트릭 정체성은 필드값(필터)이며 모든 fact는 단일 `EARS_VALUE` 컬럼을 집계합니다. (구현: `src/es/queries.py`)
 
-- 인덱스 패턴: `{process_lower}_all-{YYYY.MM.DD}` (일별). 자정 가로지르면 콤마 결합 (`resolve_index_range`).
+- 인덱스 패턴: `{process_lower}_all-{YYYY.MM.DD}` (일별, **UTC 캘린더 롤오버** — 운영 확인: 한 인덱스가 `EARS_TIMESTAMP` `00:00:00Z~23:59:59Z`를 담음). 인덱스 날짜는 시간범위 필터와 동일하게 **UTC**로 계산(`resolve_index_range`, UTC `now` 주입). 자정(UTC) 가로지르면 콤마 결합.
 - 필드 역할:
 
   | 필드 | 타입 | 역할 |
@@ -351,15 +351,16 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 
 ### 8.2 해소된 가정 + 남은 의존
 
-설계 시 미해결이던 두 blocker는 EARS_* 행 형식 확인으로 **해소**되었습니다:
+설계 시 미해결이던 blocker들은 운영 ES 확인으로 **해소**되었습니다:
 
 1. ~~EARS `proc`의 ES 착지 필드~~ → **`EARS_PROCNAME`** 으로 색인됨(`@system`/프로세스명/NIC). proc 필터·그룹(`group_by:[eqpId,proc]`)이 이 필드로 동작.
 2. ~~`category`의 ES 색인 여부~~ → **`EARS_CATEGORY`** 로 색인됨. cpu/memory의 동일 `total_used_pct`는 `EARS_CATEGORY` term으로 분리 집계 (통합 테스트 E8이 혼입 회귀 가드).
+3. ~~인덱스 일자 롤오버 시간대~~ → **UTC 확정**(운영 인덱스의 `EARS_TIMESTAMP` min/max가 `00:00:00Z~23:59:59Z`). 과거 `resolve_index_range`가 `local_tz`(Asia/Seoul)로 인덱스 날짜를 골라 KST 00:00–09:00에 엉뚱/빈 인덱스를 여는 버그가 있었으나, **인덱스 날짜를 UTC로 계산하도록 수정**(test_queries `test_index_date_uses_utc_not_local_tz` 가드).
 
 남은 의존(Phase 2/3 구현 시점에 확인):
 
-3. **baseline 인덱스 보존** — `baseline_dev`(Phase 3)는 과거 N일 일별 인덱스가 존재해야 함.
-4. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·percentile(표본 충분성) 의미에 직결.
+4. **baseline 인덱스 보존** — `baseline_dev`(Phase 3)는 과거 N일 일별 인덱스가 존재해야 함.
+5. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·percentile(표본 충분성) 의미에 직결.
 
 ---
 
