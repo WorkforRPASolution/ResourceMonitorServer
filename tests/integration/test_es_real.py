@@ -173,3 +173,36 @@ def test_build_time_range_filter_shape():
     assert f["range"]["@timestamp"]["lte"].startswith("2026-04-08T12:00:00")
     assert f["range"]["@timestamp"]["gte"].startswith("2026-04-08T11:50:00")
     assert f["range"]["@timestamp"]["format"] == "strict_date_optional_time"
+
+
+# ----------------------------------------------------------------------
+# v2 Phase 0 — confirm the REAL production index uses EARS_* row fields.
+# OrbStack has no production data, so this only runs when an operator points
+# it at a real index via env TEST_PROD_INDEX (e.g. "cvd_all-2026.06.05").
+# It locks down the field names the v2 ES layer depends on (SCHEMA.md §8).
+# ----------------------------------------------------------------------
+async def test_prod_index_has_ears_fields(real_es):
+    import os
+
+    index = os.getenv("TEST_PROD_INDEX")
+    if not index:
+        pytest.skip("set TEST_PROD_INDEX=<prod index> to verify EARS_* mapping")
+
+    mapping = await real_es.indices.get_mapping(index=index, allow_no_indices=True)
+    props: dict = {}
+    for idx_data in mapping.values():
+        props.update(idx_data.get("mappings", {}).get("properties", {}))
+
+    # Fields the v2 query/parser layer filters/aggregates on (SCHEMA.md §8.1).
+    required = [
+        "EARS_CATEGORY", "EARS_METRIC", "EARS_VALUE",
+        "EARS_EQPID", "EARS_PROCNAME", "EARS_TIMESTAMP",
+    ]
+    missing = [f for f in required if f not in props]
+    assert not missing, f"prod index {index} missing EARS_* fields: {missing} (have {sorted(props)})"
+
+    # EARS_VALUE must be numeric for metric aggregation.
+    assert props["EARS_VALUE"].get("type") in {
+        "float", "double", "half_float", "scaled_float",
+        "integer", "long", "short", "byte",
+    }, props["EARS_VALUE"]
