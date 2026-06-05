@@ -2,7 +2,7 @@
 
 공장 PC(최대 20,000대)에서 ResourceAgent가 수집해 Elasticsearch에 저장한 리소스 메트릭을 주기적으로 분석하고, 이상 발생 시 기존 Email REST API로 알림을 발송하는 분산 모니터링 서비스.
 
-> **현재 상태**: Phase 1 (분석엔진 + 알림 발송) — 임계값 기반 이상탐지, 메트릭 타입별 집계(max/state_check), 이메일 알림 발송까지 구현 완료. Debug Read-Only 모드로 운영 데이터 관찰 가능.
+> **현재 상태**: Phase 1 (분석엔진 + 알림 발송) — v2 단일 프로파일(measures/rules/notify 3계층) 기반 이상탐지 구현 완료. 닫힌 fact 카탈로그(max/min/avg/last/p50·90·95·99/spike_count), scope cascade 상속, EARS row 집계, 장비별(per-eqp) 분석, 이메일 알림 발송까지 동작. 단순 임계값은 조건 1개짜리 rule 로 표현. Debug Read-Only 모드로 운영 데이터 관찰 가능.
 
 ## 문서 맵
 
@@ -41,7 +41,7 @@ ResourceAgent (Go)
 | 항목 | 버전 | 비고 |
 |------|------|------|
 | Python | **3.11+** | 3.14에서 검증됨 |
-| Elasticsearch | **7.11.9** | 8.x 미지원 (`http_auth`/`timeout` 파라미터 사용) |
+| Elasticsearch | **7.11.x** (로컬 dev: 7.11.2) | 8.x 미지원 (`http_auth`/`timeout` 파라미터 사용) |
 | MongoDB | EARS DB | 기존 인프라 |
 | Zookeeper | **3.5.5** | Kafka용 기존 인프라 |
 | Redis | **5.0.6** | ACL 미지원, RESP3 미지원 (protocol=2) |
@@ -88,7 +88,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 | Zookeeper | 참여 | **연결 안 함** (`init_distributed`/`leader_election`/`partition_manager` 전부 스킵) |
 | Redis | cooldown 읽기/쓰기 | **읽기만** — local TTLCache 만 사용 |
 | Email API | `send_alert` 실제 발송 | **`debug_would_send_email` 로그만** |
-| Scheduler | 정상 기동 + job 실행 | **정상 기동** — 분석 엔진이 ES 조회 + 임계값 비교까지 수행, breach 감지 시 `debug_would_send_email` 로그 출력 |
+| Scheduler | 정상 기동 + job 실행 | **정상 기동** — 분석 엔진이 ES 조회 + measures 계산·rules 평가까지 수행, breach 감지 시 `debug_would_send_email` 로그 출력 |
 
 Debug 모드 전용 옵션:
 - `MONITOR_DEBUG_PROCESSES=ETCH,CVD` — 특정 process 만 분석 대상으로 지정. 비어있으면 `EQP_INFO.get_distinct_processes()` 결과 전체 사용
@@ -108,12 +108,12 @@ Debug 모드 전용 옵션:
 | `GET /metrics` | Prometheus 메트릭 (`resource_monitor_*`) |
 | `GET /admin/status` | 인스턴스/리더/파티션/스케줄 상태 |
 | `GET /admin/email-outbox` | 최근 실패한 email 발송 outbox snapshot (in-memory `deque(maxlen=1000)`, 최신 50건). v6 P1-3 — Phase 0 의 in-process DLQ. **pod 재시작 시 휘발** |
-| `DELETE /admin/cooldowns/{eqp_id}/{category}/{metric}` | 쿨다운 강제 해제 |
+| `DELETE /admin/cooldowns?process&eqp_id&proc&notify&severity` | 쿨다운 강제 해제 (v2 5-차원 식별자, query param) |
 | `POST /admin/scheduler/reload` | 프로파일 재로드 |
 
 ## 디렉토리 구조
 
-> 🟡 아래는 **현재 코드(v1: `analysis_configs` 단순 threshold)** 기준입니다. 기준정보 스키마는 **v2(단일 컬렉션 `measures`/`rules`/`notify` + cascade 상속)** 로 재설계됐으나 미구현 — `db/`·`analyzer/`·`es/`가 v2로 바뀝니다. 권위 스펙 [SCHEMA.md](SCHEMA.md), 현행 대비 차이 [SCHEMA.md §13](SCHEMA.md).
+> 아래는 **현재 코드(v2: 단일 컬렉션 `RESOURCE_MONITOR_PROFILE` — `measures`/`rules`/`notify` 3계층 + scope cascade 상속)** 기준입니다. `db/`·`analyzer/`·`es/` 모두 v2 구현 완료. 권위 스펙 [SCHEMA.md](SCHEMA.md), v1→v2 전환 내역 [SCHEMA.md §13](SCHEMA.md).
 
 ```
 src/
@@ -123,20 +123,21 @@ src/
 ├── config/
 │   ├── settings.py         # MONITOR_* 환경 변수 → AppSettings
 │   └── constants.py        # 변하지 않는 상수 (ZK paths, 캐시 크기, ALERT 코드)
-├── analyzer/                   # Phase 1: 분석 엔진
-│   ├── engine.py           # AnalysisEngine — ES 조회→임계값 비교→알림 오케스트레이션
-│   ├── threshold.py        # evaluate_thresholds + evaluate_state_check (순수 로직)
-│   ├── alert_builder.py    # ThresholdBreach → EmailAlertRequest + 카테고리 분류
-│   ├── es_parser.py        # ES aggregation 응답 파싱
-│   └── metric_resolver.py  # 와일드카드 패턴 해석 + agg_type 결정 (max/state_check)
+├── analyzer/                   # Phase 1: 분석 엔진 (v2)
+│   ├── engine.py           # AnalysisEngine.run_analysis(process, interval) — 장비별 effective 프로파일 resolve + signature 버킷팅 → measure→fact→rule→breach→cooldown→notify 오케스트레이션
+│   ├── threshold.py        # evaluate_rule / evaluate_condition (op·quantifier any·all·count · combine AND·OR, 순수 로직)
+│   ├── alert_builder.py    # ThresholdBreach → EmailAlertRequest, make_cooldown_key 5-tuple (category=breach.category 직결)
+│   ├── es_parser.py        # ES aggregation 응답 파싱 (fact type명 키 leaf)
+│   ├── metric_resolver.py  # resolve_metric_patterns — 와일드카드 패턴 fnmatch 해석 (순수)
+│   └── fact_catalog.py     # 닫힌 FactType enum + ALLOWED_OPS / PHASE_OF_FACT / AggStrategy (fact 단일 진실)
 ├── es/
-│   ├── client.py           # ES 7.x AsyncElasticsearch 래퍼 + get_numeric_field_names
-│   └── queries.py          # 인덱스 해석, time range 필터, 메트릭 집계 쿼리 빌더
+│   ├── client.py           # ES 7.x AsyncElasticsearch 래퍼 + get_metric_names (EARS_METRIC terms agg)
+│   └── queries.py          # 인덱스 해석, time range 필터, EARS row 중첩 집계 쿼리 빌더
 ├── db/
 │   ├── client.py           # MongoClient (motor) — close()는 sync
-│   ├── models.py           # MonitorProfile / Scope / EqpInfo (Pydantic v2)
-│   ├── repository.py       # ProfileRepository / EqpInfoRepository
-│   └── seed.py             # 기본 프로파일 SHA256 비교 후 upsert
+│   ├── models.py           # MonitorProfile / Scope / Measure / Rule / Fact / NotifyChannel / Governance + fold_profiles / validate_effective (Pydantic v2)
+│   ├── repository.py       # ProfileRepository(resolve_profile cascade fold) / EqpInfoRepository
+│   └── seed.py             # 기본 프로파일 structural SHA256 비교 후 upsert
 ├── cache/
 │   ├── redis_client.py     # protocol=2 (Redis 5.0.6 호환)
 │   └── cooldown.py         # AlertCooldownManager + local TTLCache fallback
@@ -154,6 +155,7 @@ src/
 │   ├── deps.py             # request.app.state 의존성 주입
 │   ├── health.py           # /healthz/{live,ready}
 │   ├── admin.py            # /admin/*
+│   ├── profiles.py         # /profiles/* — overlay CRUD + /effective(withProvenance) + measure/rule/notify item (낙관락 409 / 검증 422 / 503)
 │   └── metrics.py          # Prometheus collector
 └── startup/
     ├── infra.py            # init_infra (5개 인프라 순차 연결, 부분 실패 롤백)
@@ -162,8 +164,8 @@ src/
     └── scheduler_init.py   # init_scheduler
 
 tests/
-├── unit/         # 392 tests (mock 기반, <5s)
-├── integration/  # 64 tests (OrbStack 기반 — lifespan, failure modes, ZK LOST recovery, Phase 1 분석→알림 E2E)
+├── unit/         # 517 tests (mock 기반, <5s)
+├── integration/  # 69 tests (OrbStack 기반 — lifespan, failure modes, ZK LOST recovery, Phase 1 분석→알림 E2E)
 └── e2e/          # 5 tests (real uvicorn subprocess, multi-instance ZK failover)
 
 tools/            # 로컬 수동 테스트 도구 (운영 코드 아님 — src/ 미의존)
@@ -176,7 +178,7 @@ tools/            # 로컬 수동 테스트 도구 (운영 코드 아님 — src
 ## 테스트
 
 ```bash
-make test-fast           # unit only — 392 tests, <5s
+make test-fast           # unit only — 517 tests, <5s
 make test-integration    # unit + integration (OrbStack) — ~80s
 make test-e2e            # e2e (real uvicorn subprocess + 다중 인스턴스) — ~4분
 make test-full           # 위 3개 전부
@@ -202,10 +204,10 @@ TDD 사이클과 컨벤션은 [CONTRIBUTING.md](CONTRIBUTING.md) 참고.
 | 9 | Dockerfile + K8s manifests | done |
 | 10 | Integration tests (OrbStack) | done |
 | **Phase 1** | | |
-| 1-1 | Metric resolver + ES numeric field introspection | **done** |
-| 1-2 | Threshold comparator + state_check (process watch) | **done** |
-| 1-3 | ES 집계 쿼리 빌더 (terms agg, 메트릭 타입별 max/min) | **done** |
-| 1-4 | Alert builder (카테고리 분류 + sub_code 생성) | **done** |
+| 1-1 | Metric resolver (resolve_metric_patterns fnmatch) + EARS_METRIC terms introspection | **done** |
+| 1-2 | Rule evaluator (evaluate_rule/evaluate_condition — op·quantifier·combine; state_check은 min/max 조건으로 흡수) | **done** |
+| 1-3 | ES 집계 쿼리 빌더 (EARS row 중첩 by_eqp→by_proc→by_metric→fact별 leaf) | **done** |
+| 1-4 | Alert builder (category=breach.category 직결 + sub_code 생성) | **done** |
 | 1-5 | Analysis Engine (오케스트레이션) | **done** |
 | 1-6 | Scheduler reload(processes) + PartitionManager 연결 | **done** |
 | 1-7 | Prometheus 메트릭 (THRESHOLD_BREACHES, ALERTS_SUPPRESSED) | **done** |
@@ -213,5 +215,11 @@ TDD 사이클과 컨벤션은 [CONTRIBUTING.md](CONTRIBUTING.md) 참고.
 | 1-9 | Akka `/EmailNotify` 응답 case-insensitive 비교 + `app` 필수 필드 추가 | **done** (2026-06-02) |
 | 1-10 | 로컬 mock 이메일 도구 (`tools/`) + 단위테스트 | **done** (2026-06-02) |
 | 1-11 | Phase 1 분석→알림 통합 E2E (실 ES/Mongo/Redis, 7 시나리오) | **done** (2026-06-02) |
+| **v2** | **단일 컬렉션 스키마 전환 (measures/rules/notify 3계층)** | |
+| v2-1 | 닫힌 fact 카탈로그 (FactType enum + ALLOWED_OPS + AggStrategy) | **done** |
+| v2-2 | scope cascade fold (fold_profiles + validate_effective, resolve_profile 캐시) | **done** |
+| v2-3 | 장비별(per-eqp) resolve + effective_signature 버킷팅 엔진 (dead-path 수정) | **done** |
+| v2-4 | 프로파일 CRUD API (`/profiles/*` overlay + /effective + item, 낙관락/검증/503) | **done** |
+| v2-5 | admin DELETE /admin/cooldowns 5-차원 query param 전환 | **done** |
 
-> 테스트 총계: unit 392 + integration 64 + e2e 5 = **461 tests** 전부 통과 (2026-06-02).
+> 테스트 총계: unit 517 + integration 69 + e2e 5 = **591 tests** 전부 통과 (실 ES·Mongo·Redis).
