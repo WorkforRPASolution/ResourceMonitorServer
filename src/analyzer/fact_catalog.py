@@ -17,10 +17,10 @@ mapping) and ``analyzer.threshold`` (rule evaluation).
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class FactType(str, Enum):
+class FactType(StrEnum):
     # Phase 1 — single-window aggregation
     MAX = "max"
     MIN = "min"
