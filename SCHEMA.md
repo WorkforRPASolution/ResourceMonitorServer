@@ -1,8 +1,8 @@
 # SCHEMA — ResourceMonitorServer (모니터링 기준정보)
 
-> **버전: v2.0 (2026-06-05) — 확정 목표 설계**
+> **버전: v2.0 (2026-06-05) — 구현 완료 (Phase 1)**
 >
-> 🟡 **구현 상태 주의**: 이 문서는 **합의된 목표 설계**를 기술합니다. **현재 코드는 아직 구설계(`scope` + `analysis_configs` 단순 threshold)** 이며, 본 v2 스키마(단일 컬렉션 `measures`/`rules`/`notify`)는 **미구현**입니다. 코드와의 차이·이행 계획은 [§13 구현 상태](#13-구현-상태--현행-코드-대비-차이)를 보세요.
+> ✅ **구현 상태**: 이 v2 스키마(단일 컬렉션 `measures`/`rules`/`notify` + scope cascade)는 **구현 완료**되었습니다 — Phase 1 fact가 ES 집계→rule 평가→이메일 알림까지 end-to-end로 동작하며 실 ES·Mongo·Redis 통합 테스트가 green입니다. `src/db/models.py`가 Pydantic 단일 진실 소스입니다. Phase 2/3 fact(`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`)는 **스키마·검증은 수용하되 엔진은 skip+경고**합니다(후속 구현). 영역별 현황은 [§13 구현 상태](#13-구현-상태)를 보세요.
 >
 > 설계 결정 배경은 [ARCHITECTURE.md](ARCHITECTURE.md), 원본 요구사항은 [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md), 외부 컬렉션 풀 스키마는 `~/Developer/ARS/WebManager/docs/SCHEMA.md`, 실제 수집 메트릭 정의는 `~/Developer/ARS/ResourceAgent/docs/EARS-METRICS-REFERENCE.md` 참고.
 
@@ -305,10 +305,10 @@ base에 overlay를 차례로 덮습니다. `uniq_scope` 덕에 각 레벨 최대
 
 ### 6.5 해석 / 캐시
 
-- `resolve_profile(process, eqp_model, eqp_id)`를 "첫 매치 반환"에서 "매칭 scope 문서 수집 → base→specific fold"로 변경. 4개 scope는 단일 `$or` 쿼리로 가져와 N+1 회피.
-- effective profile을 `f"{p}:{m}:{e}"` 키로 캐시(`TTLCache(maxsize=10000, ttl=300)` 유지). 2만 eqpId > maxsize이므로 eqpId가 아니라 **고유 effective profile(버킷) 단위 캐시**로 카디널리티를 낮춤. `upsert()` 시 `cache.clear()`.
+- `resolve_profile(process, eqp_model, eqp_id)`는 "첫 매치 반환"에서 "매칭 scope 문서 수집 → base→specific fold"로 **변경 완료**. 4개 scope는 단일 `$or` 쿼리로 가져와 N+1 회피.
+- effective profile을 `f"{p}:{m}:{e}"` 키로 캐시(`TTLCache(maxsize=10000, ttl=300)`). 2만 eqpId > maxsize이므로 eqpId가 아니라 **고유 effective profile(버킷) 단위 캐시**로 카디널리티를 낮춤. `upsert()` 시 캐시 무효화.
 
-> 🔴 **현행 코드의 선결 결함(dead path)**: 분석 엔진은 지금 `resolve_profile(process,"*","*")`로 **process 레벨만** 해석해 그 process의 모든 장비에 같은 설정을 적용합니다. 따라서 model/eqp override 문서를 만들어도 **현재는 알림에 전혀 반영되지 않습니다.** cascade를 살리려면 엔진을 **per-eqp 해석**(동일 effective profile 장비를 버킷팅해 ES 쿼리는 1회 유지)으로 고치는 것이 최우선입니다([§13](#13-구현-상태--현행-코드-대비-차이)).
+> ✅ **dead-path 수정 완료**: 과거 엔진은 `resolve_profile(process,"*","*")`로 **process 레벨만** 해석해 model/eqp override가 알림에 전혀 반영되지 않았습니다(dead path). 현재는 **per-eqp 해석**(장비별 resolve 후 동일 effective profile 장비를 버킷팅 → ES 쿼리는 버킷당 1회)으로 수정되어 override가 실제 알림에 반영됩니다(통합 테스트 E7이 회귀 가드 — [§13](#13-구현-상태)).
 
 ---
 
@@ -327,20 +327,38 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 
 ---
 
-## 8. ES 인덱스 전제 + 미해결 (구현 전 확인 필수)
+## 8. ES 인덱스 전제 — EARS 행 형식
 
 ### 8.1 확정된 사실
 
-- 인덱스 패턴: `{process_lower}_all-{YYYY.MM.DD}` (일별). 자정 가로지르면 콤마 결합.
-- 문서 모양: `{ "@timestamp": date, "eqpId": text+.keyword, "process": text+.keyword, "<metric_name>": double, ... }` — **메트릭이 각자 top-level numeric 필드**.
-- 그룹핑: `terms(eqpId.keyword, size=30000)`.
+운영 ES 문서는 **EARS row**입니다(PRD §7.2). 메트릭마다 top-level numeric 필드를 두는 게 아니라 **(장비, 메트릭, 샘플)당 한 행**이고, 메트릭 정체성은 필드값(필터)이며 모든 fact는 단일 `EARS_VALUE` 컬럼을 집계합니다. (구현: `src/es/queries.py`)
 
-### 8.2 🔴 미해결 (이 스키마의 정확성이 여기에 의존)
+- 인덱스 패턴: `{process_lower}_all-{YYYY.MM.DD}` (일별). 자정 가로지르면 콤마 결합 (`resolve_index_range`).
+- 필드 역할:
 
-1. **EARS `proc`의 ES 착지 필드** — 현재 문서의 `process` 필드는 ESID/collector 그룹이지 EARS proc(`@system`/`python.exe`/`Ethernet`)이 **아닐 가능성**이 큼. 프로세스·NIC·process_watch 메트릭(`group_by:[eqpId,proc]`)이 전부 여기 의존. **EARS→ES 변환에서 proc이 어느 필드로 색인되는지 확인 → 없으면 `proc.keyword` 표준화 필요.**
-2. **`category`의 ES 색인 여부** — `cpu`/`memory`의 `total_used_pct`가 같은 필드명이라 **`category.keyword` term 필터 없이는 섞여 집계됨**(현 코드의 잠재 버그). category가 색인 안 되면 인입 매핑에 추가하거나 필드명을 category-prefix로 변경.
-3. **baseline 인덱스 보존** — `baseline_dev`는 과거 7일 일별 인덱스가 존재해야 함.
-4. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·`percentile`(표본 충분성) 의미에 직결.
+  | 필드 | 타입 | 역할 |
+  |------|------|------|
+  | `EARS_TIMESTAMP` | date | time range 필터 (`build_time_range_filter`) |
+  | `EARS_VALUE` | double | **유일한 집계 대상** (max/min/avg/percentiles/range…) |
+  | `EARS_CATEGORY` | keyword | category term 필터 (cpu/memory/disk…) |
+  | `EARS_METRIC` | keyword | metric term 필터 / 와일드카드 인스턴스 발견(terms) |
+  | `EARS_PROCNAME` | keyword | proc 필터(`measure.proc`) 또는 proc 그룹(`proc=="*"`) |
+  | `EARS_EQPID` | keyword | 장비 group_by (`terms`, size=30000) |
+
+- **모든 문자열 필드는 bare `keyword`** (text+`.keyword` 서브필드 없음) → term/terms는 필드명을 그대로 사용(`.keyword` 접미사 **금지**).
+- 집계 중첩(외→내): `by_eqp(EARS_EQPID)` → *(proc=="\*"면)* `by_proc(EARS_PROCNAME)` → *(expand=="instance"면)* `by_metric(EARS_METRIC)` → fact별 leaf sub-agg(키 = fact type명). `src/analyzer/es_parser.py`가 같은 중첩을 파싱 — sub-agg 키가 쿼리↔파서 계약.
+
+### 8.2 해소된 가정 + 남은 의존
+
+설계 시 미해결이던 두 blocker는 EARS_* 행 형식 확인으로 **해소**되었습니다:
+
+1. ~~EARS `proc`의 ES 착지 필드~~ → **`EARS_PROCNAME`** 으로 색인됨(`@system`/프로세스명/NIC). proc 필터·그룹(`group_by:[eqpId,proc]`)이 이 필드로 동작.
+2. ~~`category`의 ES 색인 여부~~ → **`EARS_CATEGORY`** 로 색인됨. cpu/memory의 동일 `total_used_pct`는 `EARS_CATEGORY` term으로 분리 집계 (통합 테스트 E8이 혼입 회귀 가드).
+
+남은 의존(Phase 2/3 구현 시점에 확인):
+
+3. **baseline 인덱스 보존** — `baseline_dev`(Phase 3)는 과거 N일 일별 인덱스가 존재해야 함.
+4. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·percentile(표본 충분성) 의미에 직결.
 
 ---
 
@@ -390,13 +408,15 @@ EqpInfoRepository._ACTIVE_FILTER = {"onoff": 1, "webmanagerUse": 1}
 | P4 | 한 measure 같은 type 중복 | 금지(참조 모호). 다른 임계/창 필요하면 measure 분리 또는 rule 분리 |
 | P5 | 임계가 measure·rule 두 곳 | `spike_count.over`=사건 경계(measure), `rule.value`=경보 기준(rule). 의도된 계층 |
 | P6 | 경보 방향을 max로만 | 낮을때는 `min`+`<=`, 범위이탈은 두 조건 OR. type↔op 적합성 검증됨 |
-| P7 | category 필터 누락 | ES 쿼리에 `category.keyword` term 필수([§8.2](#82--미해결-이-스키마의-정확성이-여기에-의존)) |
+| P7 | category 필터 누락 | ES 쿼리에 `EARS_CATEGORY` term 필수(bare keyword, `.keyword` 아님; cpu/mem `total_used_pct` 혼입 방지 — [§8.1](#81-확정된-사실)) |
 | P8 | 활성 필터 누락 | `EqpInfoRepository`만 사용 |
 | P9 | 특정 장비 override 시 전역 통째 복사 | **금지**. overlay엔 바꿀 measure/rule만(나머지 상속, [§6](#6-스코프-해석--계층-상속-cascade)). 전체 복사는 드리프트 유발 |
 
 ---
 
-## 12. 전체 JSON 예시 (전역 기본 프로파일)
+## 12. 전체 JSON 예시 (목표 전역 프로파일 — 전 Phase)
+
+> 이 예시는 **전 Phase fact를 포함한 목표 설계**입니다. Phase 2/3 fact(`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`)는 스키마상 유효하지만 **엔진은 아직 skip+경고**합니다. 실제로 시드되는 기본 프로파일(`build_default_profile`)은 **Phase 1 fact만 포함한 축소판**입니다([§13](#13-구현-상태)).
 
 ```jsonc
 {
@@ -521,34 +541,36 @@ EqpInfoRepository._ACTIVE_FILTER = {"onoff": 1, "webmanagerUse": 1}
 
 ---
 
-## 13. 구현 상태 — 현행 코드 대비 차이
+## 13. 구현 상태
 
-이 v2 스키마는 **미구현**입니다. 현행 코드와의 차이:
+v2 스키마는 **구현 완료**되었습니다 (Phase 1 fact end-to-end, 실 ES·Mongo·Redis 통합 테스트 green). 영역별 현황:
 
-| 영역 | 현행 코드 (구설계) | v2 목표 | 작업 |
-|------|------------------|---------|------|
-| `src/db/models.py` | `MonitorProfile(scope + analysis_configs[]{metric_pattern, threshold, schedule})` | `measures`/`rules`/`notify` + 검증 | **모델 교체** |
-| `src/db/seed.py` | 단순 threshold 2개 | 새 구조 기본 프로파일 | 갱신 |
-| `src/es/queries.py` | `terms(eqpId)` + max, **category 필터 없음** | `category` 필터 + `group_by(eqpId×proc)` + percentile/spike/extended_stats/date_histogram | 확장 |
-| `src/analyzer/es_parser.py` | `{field}_{agg}` 단일값 | type별 파싱(percentiles values, extended_stats) | 확장 |
-| `src/analyzer/engine.py` | threshold 단순 비교 + state_check + **process 레벨만 resolve (override dead path)** | measure→fact 계산 → rule 평가(combine/quantifier) + **per-eqp 해석** | 재작성 |
-| `src/db/repository.py` | `resolve_profile` 첫 매치 1개 (replace) | 매칭 scope `$or` 수집 → cascade fold, effective 캐시 | 변경 |
-| `src/analyzer/metric_resolver.py` | `get_agg_type`(required/forbidden만) | type 카탈로그 enum 공유 | 확장 |
-| `src/cache/cooldown.py` | 키 `{eqp}:{category}:{metric}` | `{process}:{eqp}:{proc}:{notify}:{severity}` | 키 확장 |
-| `src/config/constants.py` | `COLL_RULE` 존재 | 제거 | 정리 |
-| `tests/**` | 구모델 기준 | 참조무결성·type↔op·quantifier 회귀 | 추가 |
+| 영역 | 구현 | 비고 |
+|------|------|------|
+| `src/db/models.py` | ✅ `MonitorProfile(scope+measures+rules+notify+enabled+governance)` + 문서/effective 검증 | Pydantic 단일 진실 소스 |
+| `src/db/repository.py` | ✅ 매칭 scope `$or` 수집 → cascade fold → effective 캐시, `governance.version` 낙관락(replace/delete) | 항목 단위 편집은 API 레이어가 read-modify-write replace로 처리(repo엔 item CRUD 없음) |
+| `src/db/seed.py` | ✅ Phase-1 fact만 포함한 기본 프로파일, governance 제외 hash, 운영자 편집 보존, race 안전 | |
+| `src/es/queries.py` | ✅ EARS_* 행 형식 — `EARS_CATEGORY`/`EARS_METRIC`/`EARS_PROCNAME` 필터 + `EARS_EQPID`(×proc×instance) group_by + `EARS_VALUE` 집계 | |
+| `src/analyzer/es_parser.py` | ✅ fact type별 파싱(stat/percentiles/top_hits/filter_range) | 쿼리↔파서 계약 |
+| `src/analyzer/engine.py` | ✅ **per-eqp resolve** + effective-signature 버킷팅 + Phase2/3 skip+경고 | dead-path 수정 |
+| `src/analyzer/threshold.py` | ✅ `evaluate_rule`(op/quantifier any·all·count/combine) | state_check은 별도 함수 없이 min/max fact+op 조건으로 평가 |
+| `src/analyzer/metric_resolver.py` | ✅ fact_catalog enum 공유, 와일드카드 인스턴스 매칭 | |
+| `src/cache/cooldown.py` | ✅ 키 `{prefix}:cooldown:{process}:{eqp}:{proc}:{notify}:{severity}` (가변 5차원) | |
+| `src/scheduler/jobs.py` | ✅ (process, interval) 그룹당 job | |
+| `src/api/profiles.py` | ✅ overlay CRUD + effective(+provenance) + measure/rule/notify item API | 관리 UI는 후속 |
+| `src/config/constants.py` | ✅ `COLL_RULE` 제거 | |
 
-> `uniq_scope` 인덱스·`EqpInfoRepository`·예외 계약은 **그대로 재사용**하되, `resolve_profile`은 "첫 매치"에서 "cascade fold"로 바뀝니다([§6](#6-스코프-해석--계층-상속-cascade)).
+> `uniq_scope` 인덱스·`EqpInfoRepository`·예외 계약은 그대로 재사용하며, `resolve_profile`은 "첫 매치 replace"에서 "**cascade fold**"로 전환되었습니다([§6](#6-스코프-해석--계층-상속-cascade)). 과거의 dead-path(엔진이 process 레벨만 resolve)는 **per-eqp 해석으로 수정**되어 model/eqp override가 실제 알림에 반영됩니다(통합 테스트 E7이 회귀 가드).
 >
-> 🔴 **최우선 선결 작업**: 엔진 per-eqp 해석. 현재 process 레벨만 resolve해 override가 전혀 적용 안 됨(dead path) — 이걸 고치지 않으면 cascade든 replace든 model/eqp 설정이 무의미합니다.
+> **남은 작업**: Phase 2/3 fact(`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`)는 스키마·검증은 수용하나 엔진은 skip+경고 상태 — date_histogram/extended_stats/baseline 인프라 구현이 후속([§14](#14-phase-계획)).
 
 ---
 
 ## 14. Phase 계획
 
-- **Phase 1**: `max`/`min`/`avg`/`last`/`pNN`/`spike_count` + state(min/max) + `quantifier` + `group_by(proc)` + **category 필터** + cooldown 키 확장 + 저장 시 검증. (PRD 단순 임계·process_watch·디스크/온도 와일드카드·CPU 복합 p95+spike까지)
-- **Phase 2**: `duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore` (date_histogram·scripted_metric·top_hits 인프라) + DATA_MISSING(데이터 미수신 감지).
-- **Phase 3**: `baseline_dev` (과거 인덱스 쿼리) + escalation/수신자 라우팅 확장.
+- **Phase 1 ✅ (완료)**: `max`/`min`/`avg`/`last`/`pNN`/`spike_count` + state(min/max) + `quantifier` + `group_by(proc)` + `EARS_CATEGORY` 필터 + 5-dim cooldown 키 + 저장 시 검증 + per-eqp cascade. (PRD 단순 임계·process_watch·디스크/온도 와일드카드·CPU 복합 p95+spike까지)
+- **Phase 2 (후속)**: `duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore` (date_histogram·scripted_metric·top_hits·extended_stats 인프라) + DATA_MISSING(데이터 미수신 감지).
+- **Phase 3 (후속)**: `baseline_dev` (과거 인덱스 쿼리) + escalation/수신자 라우팅 확장.
 
 ---
 
@@ -562,4 +584,4 @@ EqpInfoRepository._ACTIVE_FILTER = {"onoff": 1, "webmanagerUse": 1}
 | [README.md](README.md) / [CONTRIBUTING.md](CONTRIBUTING.md) | 진입점 / 워크플로우 (용어 갱신 예정) |
 | `~/Developer/ARS/ResourceAgent/docs/EARS-METRICS-REFERENCE.md` | 실제 수집 메트릭(category/metric/proc/value) 정의 |
 | `~/Developer/ARS/WebManager/docs/SCHEMA.md` | EARS DB 외부 컬렉션 풀 스키마 (EQP_INFO) |
-| `src/db/models.py` | v2 구현 후 Pydantic 단일 진실 소스 (현재 미반영) |
+| `src/db/models.py` | v2 Pydantic 단일 진실 소스 (구현 완료) |
