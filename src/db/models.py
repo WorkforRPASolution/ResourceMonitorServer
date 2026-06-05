@@ -512,3 +512,36 @@ def validate_effective(profile: MonitorProfile) -> list[str]:
                 f"{sorted(procs)}; a rule must reference one proc dimension"
             )
     return errors
+
+
+def lint_effective(profile: MonitorProfile) -> list[str]:
+    """Non-fatal hygiene warnings on a folded effective profile (SCHEMA.md §5
+    items 8/9). Unlike :func:`validate_effective` these never reject a write —
+    callers log them. Returns warning messages (empty when clean).
+
+    - item 8: a declared fact that no rule references (dead fact — harmless but
+      usually a leftover or a typo'd rule reference).
+    - item 9: ``delta``/``growth_rate`` on a ``gauge`` metric (those facts model
+      change over time and almost always belong on a ``counter``).
+    """
+    warnings: list[str] = []
+    referenced: set[tuple[str, str]] = set()
+    for rule in profile.rules:
+        for cond in rule.when:
+            mid, _, ftype = cond.fact.partition(".")
+            referenced.add((mid, ftype))
+    for measure in profile.measures:
+        for fact in measure.facts:
+            if (measure.id, fact.type.value) not in referenced:
+                warnings.append(
+                    f"measure '{measure.id}' declares fact '{fact.type.value}' "
+                    f"({measure.id}.{fact.type.value}) that no rule references"
+                )
+        if measure.metric_kind == "gauge":
+            for fact in measure.facts:
+                if fact.type in (FactType.DELTA, FactType.GROWTH_RATE):
+                    warnings.append(
+                        f"measure '{measure.id}' applies '{fact.type.value}' to a "
+                        f"gauge metric_kind (delta/growth_rate usually need a counter)"
+                    )
+    return warnings

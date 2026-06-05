@@ -19,6 +19,7 @@ from src.db.models import (
     Rule,
     Scope,
     fold_profiles,
+    lint_effective,
     validate_effective,
 )
 
@@ -246,6 +247,52 @@ class TestValidateEffective:
                               Condition(fact="proc_req.min", op="==", value=0)])],
         )
         assert any("differing proc" in e for e in validate_effective(p))
+
+class TestLintEffective:
+    """Non-fatal hygiene warnings (SCHEMA §5 items 8/9) — never reject."""
+
+    def test_clean_profile_no_warnings(self):
+        # every declared fact referenced, no gauge+delta misuse
+        p = _make_profile(
+            measures=[
+                Measure(id="cpu", category="cpu", metric="total_used_pct",
+                        window_minutes=15, facts=[Fact(type="max")]),
+            ],
+            rules=[Rule(id="r", interval_minutes=5, severity="WARNING",
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
+        )
+        assert lint_effective(p) == []
+
+    def test_dead_fact_warned(self):
+        # measure 'cpu' declares max+avg but only cpu.max is referenced → avg dead
+        p = _make_profile(
+            measures=[
+                Measure(id="cpu", category="cpu", metric="total_used_pct",
+                        window_minutes=15, facts=[Fact(type="max"), Fact(type="avg")]),
+            ],
+            rules=[Rule(id="r", interval_minutes=5, severity="WARNING",
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
+        )
+        warns = lint_effective(p)
+        assert any("cpu.avg" in w and "no rule" in w for w in warns)
+
+    def test_gauge_with_delta_warned(self):
+        # delta/growth_rate on a gauge metric is almost always a modeling mistake
+        p = _make_profile(
+            measures=[
+                Measure(id="cpu", category="cpu", metric="total_used_pct",
+                        metric_kind="gauge", window_minutes=15,
+                        facts=[Fact(type="max"), Fact(type="delta")]),
+            ],
+            rules=[
+                Rule(id="r1", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=80)]),
+                Rule(id="r2", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.delta", op=">", value=0)]),
+            ],
+        )
+        warns = lint_effective(p)
+        assert any("gauge" in w and "delta" in w for w in warns)
 
     def test_rule_same_proc_measures_ok(self):
         # two scalar @system measures combined is fine

@@ -47,6 +47,7 @@ from src.db.models import (
     ProfileVersionConflictError,
     Scope,
     fold_profiles,
+    lint_effective,
     utcnow,
     validate_effective,
 )
@@ -225,6 +226,15 @@ class ProfileRepository:
                 eqp_model=eqp_model,
                 eqp_id=eqp_id,
                 errors=errors,
+            )
+        warnings = lint_effective(effective)
+        if warnings:
+            logger.warning(
+                "effective_profile_lint",
+                process=process,
+                eqp_model=eqp_model,
+                eqp_id=eqp_id,
+                warnings=warnings,
             )
         self._resolve_cache[cache_key] = effective
         return effective

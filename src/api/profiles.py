@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
@@ -28,9 +29,11 @@ from src.db.models import (
     Rule,
     Scope,
     fold_profiles,
+    lint_effective,
     validate_effective,
 )
 
+logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/profiles")
 
 
@@ -112,9 +115,48 @@ async def _validate_composed(repo: Any, overlay: MonitorProfile) -> None:
         raise _map_repo_error(e) from e
     parents = [d for d in docs if d.scope != overlay.scope]
     composed = sorted([*parents, overlay], key=lambda p: _rank(p.scope))
-    errors = validate_effective(fold_profiles(composed, overlay.scope))
+    effective = fold_profiles(composed, overlay.scope)
+    errors = validate_effective(effective)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
+    _check_interval_scope(parents, overlay, effective)
+    warnings = lint_effective(effective)
+    if warnings:
+        logger.warning(
+            "profile_write_lint", scope=overlay.scope.to_mongo(), warnings=warnings
+        )
+
+
+def _check_interval_scope(
+    parents: list[MonitorProfile], overlay: MonitorProfile, effective: MonitorProfile
+) -> None:
+    """Reject a model/eqp-level overlay that introduces a rule with an evaluation
+    interval not present at the process level (SCHEMA §6.4).
+
+    The scheduler reads the (process,*,*) effective profile to decide the set of
+    cadences; a new interval introduced deeper in the cascade would never be
+    scheduled — a silent lost breach. Interval (cadence) is therefore overridable
+    only down to the process level (thresholds/values may still be overridden per
+    eqp). Global and process-level writes are exempt: they *are* what's scheduled.
+    """
+    if overlay.scope.eqp_model == "*" and overlay.scope.eqp_id == "*":
+        return
+    process_docs = sorted(
+        [d for d in parents if _rank(d.scope) <= 1], key=lambda p: _rank(p.scope)
+    )
+    process_eff = fold_profiles(process_docs, Scope(process=overlay.scope.process))
+    process_intervals = {r.interval_minutes for r in process_eff.rules}
+    extra = sorted({r.interval_minutes for r in effective.rules} - process_intervals)
+    if extra:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                f"interval(s) {extra} min introduced at scope "
+                f"{overlay.scope.process}/{overlay.scope.eqp_model}/{overlay.scope.eqp_id} "
+                f"are not scheduled (cadence is overridable only at the process "
+                f"level — SCHEMA §6.4); add them to the (process,*,*) profile first"
+            ],
+        )
 
 
 async def _load_overlay(repo: Any, scope: Scope) -> MonitorProfile:
@@ -249,6 +291,11 @@ async def add_measure(body: MeasureWrite, repo: Any = Depends(get_profile_repo))
 async def update_measure(
     measure_id: str, body: MeasureWrite, repo: Any = Depends(get_profile_repo)
 ) -> dict[str, Any]:
+    if body.measure.id != measure_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"measure id mismatch: path '{measure_id}' != body '{body.measure.id}'",
+        )
     overlay = await _load_overlay(repo, body.scope)
     idx = next((i for i, m in enumerate(overlay.measures) if m.id == measure_id), None)
     if idx is None:
@@ -288,6 +335,11 @@ async def add_rule(body: RuleWrite, repo: Any = Depends(get_profile_repo)) -> di
 async def update_rule(
     rule_id: str, body: RuleWrite, repo: Any = Depends(get_profile_repo)
 ) -> dict[str, Any]:
+    if body.rule.id != rule_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"rule id mismatch: path '{rule_id}' != body '{body.rule.id}'",
+        )
     overlay = await _load_overlay(repo, body.scope)
     idx = next((i for i, r in enumerate(overlay.rules) if r.id == rule_id), None)
     if idx is None:

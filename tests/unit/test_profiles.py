@@ -221,6 +221,30 @@ class TestItemCrud:
         }
         assert client.patch("/profiles/measures/ghost", json=body).status_code == 404
 
+    def test_update_measure_id_mismatch_rejected(self, client, repo):
+        # PATCH path id is authoritative; a body whose id differs from the path
+        # would silently rename (or create a duplicate id) — must be rejected.
+        repo.find_by_scope.return_value = _overlay()
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "measure": {"id": "renamed", "category": "cpu", "metric": "x",
+                        "window_minutes": 15, "facts": [{"type": "max"}]},
+        }
+        r = client.patch("/profiles/measures/cpu", json=body)
+        assert r.status_code == 400
+        repo.replace_with_version.assert_not_awaited()
+
+    def test_update_rule_id_mismatch_rejected(self, client, repo):
+        repo.find_by_scope.return_value = _overlay()
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "rule": {"id": "renamed", "interval_minutes": 5, "severity": "WARNING",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 80}]},
+        }
+        r = client.patch("/profiles/rules/cpu_warn", json=body)
+        assert r.status_code == 400
+        repo.replace_with_version.assert_not_awaited()
+
     def test_delete_measure_dangling_422(self, client, repo):
         # overlay has cpu measure + cpu_warn rule referencing cpu.max
         overlay = _overlay()
@@ -250,6 +274,45 @@ class TestItemCrud:
             "channel": {"cooldown_minutes": 60, "email_subcode": "PAGER"},
         }
         r = client.patch("/profiles/notify/default", json=body)
+        assert r.status_code == 200
+        repo.replace_with_version.assert_awaited_once()
+
+    def _process_doc(self):
+        return MonitorProfile(
+            scope=Scope(process="CVD"),
+            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                              window_minutes=15, facts=[Fact(type="max")])],
+            rules=[Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
+            notify={"default": NotifyChannel(cooldown_minutes=30)},
+        )
+
+    def test_model_overlay_new_interval_rejected(self, client, repo):
+        # interval (cadence) is schedulable only at process level; a model-scope
+        # rule with a NEW interval would never be scheduled → reject (SCHEMA §6.4).
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "cpu_fast", "interval_minutes": 7, "severity": "CRITICAL",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 422
+        repo.replace_with_version.assert_not_awaited()
+
+    def test_model_overlay_existing_interval_ok(self, client, repo):
+        # same cadence as the process-level schedule → allowed
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "cpu_crit", "interval_minutes": 5, "severity": "CRITICAL",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
         assert r.status_code == 200
         repo.replace_with_version.assert_awaited_once()
 

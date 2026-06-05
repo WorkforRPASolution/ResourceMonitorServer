@@ -152,6 +152,20 @@ class TestCascadeFold:
         await repo.resolve_profile("CVD", "M", "E1")
         assert mock_collection.find.call_count == 1  # second served from cache
 
+    async def test_invalid_overlay_survives_returns_effective(self, mock_collection):
+        # A bad overlay (rule references a missing measure) must NOT crash
+        # resolution — analysis must survive; errors are logged, not raised.
+        bad = _make_profile(
+            process="*",
+            rules=[Rule(id="r", interval_minutes=5, severity="WARNING",
+                        when=[Condition(fact="ghost.max", op=">=", value=1)])],
+        )
+        mock_collection.find = MagicMock(return_value=_cursor([_doc(bad)]))
+        repo = ProfileRepository(mock_collection)
+        eff = await repo.resolve_profile("CVD", "M", "E1")
+        assert eff is not None
+        assert [r.id for r in eff.rules] == ["r"]  # returned despite invalid ref
+
 
 class TestUpsert:
     async def test_uses_exact_filter_and_clears_cache(self, mock_collection):
@@ -196,12 +210,43 @@ class TestOptimisticLock:
         with pytest.raises(ProfileNotFoundError):
             await repo.replace_with_version(_make_profile(version=1), expected_version=1)
 
+    async def test_replace_with_version_clears_cache(self, mock_collection):
+        # operator edit must invalidate the effective cache, else a stale folded
+        # profile lingers for up to the TTL and analysis uses the old thresholds.
+        repo = ProfileRepository(mock_collection)
+        mock_collection.update_one.return_value = MagicMock(matched_count=1)
+        repo._resolve_cache["sentinel"] = _make_profile()
+        await repo.replace_with_version(_make_profile(version=1), expected_version=1)
+        assert "sentinel" not in repo._resolve_cache
+
     async def test_delete_with_version_ok(self, mock_collection):
         repo = ProfileRepository(mock_collection)
         mock_collection.delete_one.return_value = MagicMock(deleted_count=1)
         await repo.delete_by_scope(Scope(process="CVD"), expected_version=2)
         filter_ = mock_collection.delete_one.call_args.args[0]
         assert filter_["governance.version"] == 2
+
+    async def test_delete_clears_cache(self, mock_collection):
+        repo = ProfileRepository(mock_collection)
+        mock_collection.delete_one.return_value = MagicMock(deleted_count=1)
+        repo._resolve_cache["sentinel"] = _make_profile()
+        await repo.delete_by_scope(Scope(process="CVD"), expected_version=2)
+        assert "sentinel" not in repo._resolve_cache
+
+    async def test_delete_unconditional_omits_version_filter(self, mock_collection):
+        # expected_version=None → unconditional delete (no governance.version key)
+        repo = ProfileRepository(mock_collection)
+        mock_collection.delete_one.return_value = MagicMock(deleted_count=1)
+        await repo.delete_by_scope(Scope(process="CVD"))
+        filter_ = mock_collection.delete_one.call_args.args[0]
+        assert "governance.version" not in filter_
+
+    async def test_delete_unconditional_absent_raises_not_found(self, mock_collection):
+        repo = ProfileRepository(mock_collection)
+        mock_collection.delete_one.return_value = MagicMock(deleted_count=0)
+        mock_collection.find_one.return_value = None
+        with pytest.raises(ProfileNotFoundError):
+            await repo.delete_by_scope(Scope(process="CVD"))
 
     async def test_delete_absent_raises_not_found(self, mock_collection):
         repo = ProfileRepository(mock_collection)
