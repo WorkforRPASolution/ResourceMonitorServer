@@ -1,367 +1,565 @@
-# SCHEMA — ResourceMonitorServer (Phase 0–1)
+# SCHEMA — ResourceMonitorServer (모니터링 기준정보)
 
-ResourceMonitorServer가 EARS DB(MongoDB)에서 직접 다루는 모든 컬렉션의 스키마 레퍼런스. 본 문서는 **현재 코드에 박혀 있는 사실**을 기준으로 합니다 — 설계 의도는 [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md), 결정 배경은 [ARCHITECTURE.md](ARCHITECTURE.md), 외부 컬렉션의 풀 스키마는 `~/Developer/ARS/WebManager/docs/SCHEMA.md` 참고.
+> **버전: v2.0 (2026-06-05) — 확정 목표 설계**
+>
+> 🟡 **구현 상태 주의**: 이 문서는 **합의된 목표 설계**를 기술합니다. **현재 코드는 아직 구설계(`scope` + `analysis_configs` 단순 threshold)** 이며, 본 v2 스키마(단일 컬렉션 `measures`/`rules`/`notify`)는 **미구현**입니다. 코드와의 차이·이행 계획은 [§13 구현 상태](#13-구현-상태--현행-코드-대비-차이)를 보세요.
+>
+> 설계 결정 배경은 [ARCHITECTURE.md](ARCHITECTURE.md), 원본 요구사항은 [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md), 외부 컬렉션 풀 스키마는 `~/Developer/ARS/WebManager/docs/SCHEMA.md`, 실제 수집 메트릭 정의는 `~/Developer/ARS/ResourceAgent/docs/EARS-METRICS-REFERENCE.md` 참고.
 
 ---
 
-## 0. 데이터베이스 + 컬렉션 위치
+## 0. 개요 — 단일 컬렉션 결정
 
-**모든 컬렉션은 단일 `EARS` 데이터베이스 안에 공존합니다.** RMS는 별도 DB를 만들지 않고 Akka 서버와 동일 DB를 공유합니다.
+### 0.1 컬렉션은 1개
 
-### 코드 근거
-| 위치 | 설정 |
-|------|------|
-| `src/config/settings.py:38` | `mongo_db: str = "EARS"` (default) |
-| `src/db/client.py:53` | `self._db = client[self._settings.mongo_db]` |
-| 환경 변수 (override) | `MONITOR_MONGO_DB` |
-| K8s ConfigMap | `MONITOR_MONGO_DB: "EARS"` (`k8s/configmap.yaml`) |
+모니터링 기준정보는 **단일 컬렉션 `RESOURCE_MONITOR_PROFILE`** 하나로 관리합니다. (구설계의 `RESOURCE_MONITOR_RULE` 별도 컬렉션은 **폐기**.)
 
-### EARS DB의 컬렉션 전체 (Akka + RMS 공존)
+분리하지 않은 이유(요약):
+
+- "단순 임계값 vs 복합 조건"은 자연스러운 컬렉션 경계가 아니라 **표현식 복잡도의 연속선**입니다. 성숙한 모니터링 시스템(Prometheus·Zabbix·Datadog 등) 중 복잡도를 1차 데이터 경계로 삼는 곳은 없습니다.
+- 단순/복합을 두 컬렉션으로 가르면 임계값·알림·스코프 해석이 양쪽에 **중복**되고, 단순 임계값에 "지속시간" 한 줄만 추가해도 컬렉션 간 **강제 이전**이 발생합니다.
+- 한 장비 묶음에 필요한 모든 것(잴 것/판단할 것/보낼 것)을 한 문서에 두면 조회 1회·원자적 수정·스코프 해석 1벌로 끝납니다.
+
+→ 단순 임계값은 **조건 1개짜리 rule**, 복합 조건은 **조건 여러 개짜리 rule**로 표현합니다. 같은 구조, 조건 개수 차이뿐.
+
+### 0.2 3계층 구조
+
+| 계층 | 역할 | 비유 |
+|------|------|------|
+| `scope` | 이 설정을 **어느 장비에** 적용할지 | 누구에게 |
+| `measures[]` | **무엇을 어떻게 잴지** (집계/분석 → fact 산출) | 잰다 |
+| `rules[]` | 잰 값으로 **언제 경보할지** (조건 + 평가 주기) | 판단한다 |
+| `notify{}` | **어떻게 알릴지** (이메일 코드, cooldown) | 알린다 |
+
+데이터 흐름: `scope로 대상 결정 → measures로 잼 → rules로 판단 → notify로 발송`.
+
+### 0.3 데이터베이스 위치
+
+모든 컬렉션은 단일 `EARS` MongoDB에 공존합니다. RMS는 별도 DB를 만들지 않고 Akka 서버와 같은 DB를 공유합니다.
 
 ```
 EARS (database)
-├── ARS_USER_INFO                  ← Akka 소유 (기존)
-├── EQP_INFO                       ← Akka 소유 (기존), RMS는 read-only
-├── EMAIL_TEMPLATE_REPOSITORY      ← Akka 소유 (기존)
-├── EMAILINFO                      ← Akka 소유 (기존)
-├── EMAIL_RECIPIENTS               ← Akka 소유 (기존)
-├── EMAIL_IMAGE_REPOSITORY         ← Akka 소유 (기존)
-├── POPUP_TEMPLATE_REPOSITORY      ← Akka 소유 (기존)
-├── RESOURCE_MONITOR_PROFILE       ← ★ RMS 소유 (Phase 0 신규)
-└── RESOURCE_MONITOR_RULE          ← ★ RMS 소유 (Phase 3+ 예약, 미사용)
+├── EQP_INFO                    ← Akka 소유 (기존), RMS는 read-only
+├── EMAIL_TEMPLATE_REPOSITORY   ← Akka 소유 (기존), 알림 발송 시 참조
+├── EMAIL_RECIPIENTS / EMAILINFO ← Akka 소유 (기존)
+└── RESOURCE_MONITOR_PROFILE    ← ★ RMS 소유 (모니터링 기준정보, 단일 컬렉션)
 ```
 
-### 왜 단일 DB인가 (설계 의도)
-1. **EARS = 단일 사실 원천**. Akka 서버와 RMS가 같은 장비/사용자/이메일 템플릿을 공유해야 하므로 DB 분리 시 cross-DB join 불가.
-2. **`EQP_INFO`를 RMS가 read-only로 사용** — Akka가 master, 같은 DB라야 일관된 view.
-3. **이메일 발송 시 `EMAIL_TEMPLATE_REPOSITORY` 참조** (Phase 1+ alert body 빌더). 역시 같은 DB가 자연스러움.
-4. **컬렉션 충돌은 prefix로 격리**: 신규 컬렉션은 모두 `RESOURCE_MONITOR_*` prefix → 기존 7개 컬렉션과 충돌 없음 (PRD §5에서 확인 완료).
+| 위치 | 설정 |
+|------|------|
+| `src/config/settings.py` | `mongo_db: str = "EARS"` (default) |
+| 환경 변수 (override) | `MONITOR_MONGO_DB` |
+| 상수 | `COLL_PROFILE = "RESOURCE_MONITOR_PROFILE"` (`src/config/constants.py`) |
 
-### 환경별 매핑
-| 환경 | DB 인스턴스 | DB 이름 |
-|------|----------|--------|
-| 운영 | 운영 MongoDB 클러스터 | `EARS` |
-| 개발 (OrbStack) | `mongodb-44` 컨테이너 (`mongo:4.4.30`) | `EARS` (Akka/WebManager와 동일 인스턴스 공유) |
-| 통합 테스트 | `mongodb-44` 컨테이너 | `EARS_test_<run_id>` (run마다 격리, 끝나면 drop) |
+> `RESOURCE_MONITOR_*` prefix로 기존 컬렉션과 충돌 없음. 구설계의 `COLL_RULE` 상수는 제거합니다.
 
 ---
 
-### RMS가 직접 다루는 컬렉션 — 한 줄 요약
+## 1. 문서 구조
 
-| 컬렉션 | 소유자 | Phase 0 상태 | 액세스 |
-|--------|--------|-------------|--------|
-| [`RESOURCE_MONITOR_PROFILE`](#1-resource_monitor_profile) | RMS (신규 생성) | **활성 사용** | read/write (seed + resolve) |
-| [`RESOURCE_MONITOR_RULE`](#2-resource_monitor_rule) | RMS (신규 생성) | 상수만 정의, **미사용** | — (Phase 3+) |
-| [`EQP_INFO`](#3-eqp_info-외부) | Akka 서버 | **활성 사용** | read-only |
-
-상수 정의: `src/config/constants.py:22-24`
-
-```python
-COLL_PROFILE  = "RESOURCE_MONITOR_PROFILE"
-COLL_RULE     = "RESOURCE_MONITOR_RULE"
-COLL_EQP_INFO = "EQP_INFO"
-```
-
-EARS DB의 기존 7개 컬렉션(`EQP_INFO, ARS_USER_INFO, EMAIL_TEMPLATE_REPOSITORY, POPUP_TEMPLATE_REPOSITORY, EMAILINFO, EMAIL_RECIPIENTS, EMAIL_IMAGE_REPOSITORY`)과 **충돌 없음** — 신규 `RESOURCE_MONITOR_*` prefix 사용.
-
----
-
-## 1. `RESOURCE_MONITOR_PROFILE`
-
-**역할**: 메트릭 분석 규칙(threshold + schedule)을 장비 계층 스코프에 묶어 저장.
-**Pydantic 모델**: `MonitorProfile` (`src/db/models.py:113`)
-**리포지토리**: `ProfileRepository` (`src/db/repository.py:37`)
-**시드**: `seed_default_profile()` (`src/db/seed.py:69`) — 부팅 시 idempotent upsert
-
-### 1.1 문서 구조
+### 1.1 한눈에
 
 ```jsonc
 {
-  "_id": ObjectId("..."),                    // Mongo 자동 부여
-  "scope": {
-    "process": "*",                           // 필수. EQP_INFO.process와 1:1, "*" = wildcard
-    "eqpModel": "*",                          // ★ "model" 아님 (alias 처리)
-    "eqpId": "*"
-  },
-  "analysis_configs": [
-    {
-      "metric_pattern": "total_used_pct",    // 와일드카드 가능 (예: "*_core_load")
-      "threshold": {
-        "warning": 80.0,
-        "critical": 95.0,
-        "cooldown_minutes": 30
-      },
-      "schedule": {
-        "interval_minutes": 5,
-        "window_minutes": 10
-      }
-    }
-  ]
+  "_id": ObjectId,
+  "scope":    { "process": "*", "eqpModel": "*", "eqpId": "*" },  // 어느 장비에
+  "enabled":  true,
+  "governance": { "version": 1, "updated_by": "...", "updated_at": ISODate, "change_reason": "..." },
+
+  "measures": [ /* 잰다: 무엇을·어떻게 → fact 산출 */ ],
+  "rules":    [ /* 판단: fact로 경보 결정 + 평가 주기 */ ],
+  "notify":   { /* 알린다: 전달 채널 */ }
 }
 ```
 
-### 1.2 필드 레퍼런스
+### 1.2 `scope` — 적용 대상
 
-| 경로 | 타입 | 필수 | 기본값 | 비고 |
+EQP_INFO 계층을 따릅니다. 구체적 scope가 더 넓은 scope를 **상속**합니다([§6](#6-스코프-해석--계층-상속-cascade)).
+
+| 경로 | 타입 | 필수 | 기본 | 비고 |
 |------|------|------|------|------|
-| `_id` | ObjectId | auto | — | Pydantic의 `id: str | None`로 변환 (`from_mongo`) |
-| `scope` | object | ✓ | — | 임베디드 객체, 별도 컬렉션 아님 |
-| `scope.process` | string | ✓ | — | EQP_INFO.process와 동일 키. `"*"` = 모든 process |
-| `scope.eqpModel` | string |  | `"*"` | **★ 카멜케이스**. Pydantic alias chain: `eqp_model` ↔ JSON `model` ↔ Mongo `eqpModel` |
-| `scope.eqpId` | string |  | `"*"` | 단일 장비. EQP_INFO.eqpId와 동일 키 |
-| `analysis_configs` | array | ✓ | `[]` | 여러 메트릭에 대한 룰 묶음 |
-| `analysis_configs[].metric_pattern` | string | ✓ | — | 메트릭 이름 또는 와일드카드 패턴 (예: `"*_core_load"`) |
-| `analysis_configs[].threshold` | object | ✓ | — | |
-| `analysis_configs[].threshold.warning` | float | ✓ | — | 경고 임계값 (단위는 metric 의존) |
-| `analysis_configs[].threshold.critical` | float | ✓ | — | 심각 임계값 |
-| `analysis_configs[].threshold.cooldown_minutes` | int | ✓ | — | Redis cooldown TTL (이메일 폭주 방지) |
-| `analysis_configs[].schedule` | object | ✓ | — | |
-| `analysis_configs[].schedule.interval_minutes` | int | ✓ | — | APScheduler job 주기 |
-| `analysis_configs[].schedule.window_minutes` | int | ✓ | — | ES query 시계열 윈도우 |
+| `scope.process` | string | ✓ | — | EQP_INFO.process. `"*"`=전체. 파티션/인덱스 라우팅 키이기도 함 |
+| `scope.eqpModel` | string | | `"*"` | **카멜케이스**. Pydantic alias: `eqp_model` ↔ JSON `model` ↔ Mongo `eqpModel` |
+| `scope.eqpId` | string | | `"*"` | 단일 장비 |
 
-### 1.3 Pydantic ↔ Mongo 매핑
+> ⚠️ `scope.process`(설정 적용 범위 = 파티션/`process.keyword` 필터)와 measure의 `proc`(EARS row 정체성)은 **다른 개념**입니다. 이름이 비슷하니 혼동 금지.
+>
+> **상속(cascade)**: 구체적 scope 문서는 더 넓은 scope를 상속하고 **바꿀 것만 담는 얇은 overlay**입니다(전체 복사 금지). 합성 규칙은 [§6](#6-스코프-해석--계층-상속-cascade).
 
-```python
-class Scope(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
-    process: str
-    eqp_model: str = Field(default="*", alias="model")    # Python 명: eqp_model
-    eqp_id:   str = Field(default="*", alias="eqpId")     # Python 명: eqp_id
+### 1.3 `measures[]` — 잰다
+
+각 measure는 "무엇을·어떻게 집계해 어떤 fact를 산출하는가"의 정의입니다. **주기(interval)는 갖지 않습니다** — 주기는 rule이 소유하고, measure는 **집계창(window)** 만 갖습니다.
+
+| 경로 | 타입 | 필수 | 기본 | 비고 |
+|------|------|------|------|------|
+| `id` | string | ✓ | — | 문서 내 유일. rule이 `"id.type"`으로 참조하는 핸들 |
+| `category` | string | ✓ | — | **EARS category** (cpu/memory/disk/…). 충돌 방지에 필수 |
+| `metric` | string | ✓ | — | **EARS metric**. 와일드카드 가능(`"*_core_load"`, `"*"`) |
+| `proc` | string | | `"@system"` | **EARS proc**. `"*"`이면 proc별로 fact 산출 |
+| `window_minutes` | int | ✓ | — | 집계 시간창 (이 measure의 모든 fact가 공유) |
+| `group_by` | string[] | | `["eqpId"]` | `proc=="*"`이면 자동 `["eqpId","proc"]` |
+| `expand` | enum | | `"scalar"` | `metric`이 와일드카드면 자동 `"instance"` (필드별 fact 집합 산출) |
+| `metric_kind` | enum\|null | | `null` | `gauge`/`counter`/`cumulative`. **선택 lint 힌트** (강제 아님) |
+| `bucketing` | object\|null | 조건부 | `null` | 시간축 fact(`duration`/`growth_rate`/`moving_avg`/`trend`)가 있으면 **필수** |
+| `bucketing.seconds` | int | ✓* | — | date_histogram 버킷 크기 |
+| `bucketing.points` | int\|null | 조건부 | `null` | `moving_avg`/`trend`가 있으면 필수 |
+| `baseline` | object\|null | 조건부 | `null` | `baseline_dev` fact가 있으면 **필수** |
+| `baseline.days` | int | | `7` | 과거 며칠 |
+| `baseline.same_hour` | bool | | `true` | 동일 시간대만 |
+| `baseline.min_points` | int | | `30` | 표본 부족 시 경보 안 함 |
+| `baseline.deviation_floor` | float | | `1.0` | 분모≈0 폭주 방지 |
+| `facts[]` | array | ✓ | — | 산출할 fact 목록. 각 항목 = fact 1개 |
+| `facts[].type` | enum | ✓ | — | **type 이름이 곧 fact 이름** ([§2 카탈로그](#2-type--fact-카탈로그)). 한 measure 내 **유일** |
+| `facts[].over` | float | 조건부 | — | `spike_count`/`duration` 필수 — "사건 경계" |
+| `facts[].direction` | enum | 조건부 | — | `spike_count`/`duration`: `above`/`below`, `zscore`: `high`/`low` |
+| `facts[].mode` | enum | | `last_minus_first` | `delta`: `last_minus_first`/`max_minus_min` |
+| `facts[].unit` | enum | | `per_hour` | `growth_rate`: `per_hour`/`per_day` |
+
+**핵심 원칙: 1 measure 항목 = 1 fact = 1 type.** `bucketing`/`baseline`처럼 *함께 해석되는 통계가 공유하는 파라미터*는 measure 레벨에 한 번만 두어 일관성을 강제합니다(예: `moving_avg`와 `trend`가 같은 평활화 창을 쓰도록).
+
+### 1.4 `rules[]` — 판단 + 평가 주기
+
+| 경로 | 타입 | 필수 | 기본 | 비고 |
+|------|------|------|------|------|
+| `id` | string | ✓ | — | 문서 내 유일 |
+| `interval_minutes` | int | ✓ | — | **평가 주기**. 스케줄 단위 = (process × rule) |
+| `severity` | enum | ✓ | — | `WARNING` / `CRITICAL` |
+| `combine` | enum | | `AND` | 여러 조건 결합: `AND` / `OR` |
+| `when[]` | array | ✓ | — | 조건 목록 |
+| `when[].fact` | string | ✓ | — | `"measureId.type"` (예: `"cpu.p95"`) |
+| `when[].op` | enum | ✓ | — | `>=` `>` `<=` `<` `==` `!=` `trend==` ([§3](#3-연산자--정량자)) |
+| `when[].value` | float\|string | ✓ | — | `trend==`일 때만 문자열(`"increasing"` 등) |
+| `when[].quantifier` | enum | | `any` | instance/proc measure 정량화: `any`/`all`/`count` |
+| `when[].count_min` | int\|null | 조건부 | — | `quantifier=="count"`일 때 필수 |
+| `notify` | string | | `"default"` | `notify` 맵의 채널 이름 |
+
+> **2단계 임계(WARNING 80 / CRITICAL 95)** 는 같은 measure를 참조하는 **rule 2개**로 표현합니다(`cpu_warn`, `cpu_crit`). 이것이 단일/복합을 통일하고 measure 폭증을 막는 정석입니다.
+
+### 1.5 `notify{}` — 알린다
+
+이름 → 채널 맵. rule이 이름으로 참조해 중복을 제거합니다.
+
+| 경로 | 타입 | 필수 | 기본 | 비고 |
+|------|------|------|------|------|
+| `notify.<name>.cooldown_minutes` | int | ✓ | — | Redis cooldown TTL (이메일 폭주 방지) |
+| `notify.<name>.email_code` | string | | `"RESOURCE_MONITOR"` | `EMAIL_TEMPLATE_REPOSITORY` 매칭 코드 |
+| `notify.<name>.email_subcode` | string\|null | | `null` | `null`이면 `"{category}_{severity}"` 자동 |
+
+**cooldown 키** = `{prefix}:cooldown:{process}:{eqpId}:{proc}:{notify}:{severity}` — 같은 (장비, proc, 알림채널, 심각도) 단위로 억제. 같은 notify를 공유하는 rule들은 한 사건으로 묶입니다.
+
+---
+
+## 2. type (= fact) 카탈로그
+
+`measures[].facts[].type` 에 넣는 값 = rule에서 `measureId.type`으로 부르는 fact 이름. **닫힌 enum**(자유 텍스트 금지).
+
+| type (=fact) | 산출 의미 | 필수 params | measure 설정 | 허용 op | value 단위 | window 따름 | Phase |
+|---|---|---|---|---|---|---|---|
+| `max` | 창 내 최댓값 | — | — | `>` `>=` | 메트릭 | ✅ | 1 |
+| `min` | 창 내 최솟값 | — | — | `<` `<=` `==` | 메트릭 | ✅ | 1 |
+| `avg` | 창 내 평균 | — | — | `>` `>=` `<` `<=` | 메트릭 | ✅ | 1 |
+| `last` | 창 내 마지막값 | — | — | 전부 | 메트릭 | ✅ | 1 |
+| `p50` `p90` `p95` `p99` | 백분위 | — | — | `>` `>=` `<` `<=` | 메트릭 | ✅ | 1 |
+| `spike_count` | `over` 초과 샘플 수 | `over`, `direction` | — | `>` `>=` | 정수(횟수) | ✅ | 1 |
+| `duration` | 최대 연속 지속(초) | `over`, `direction` | `bucketing.seconds` | `>` `>=` | 초 | ✅ | 2 |
+| `delta` | 변화량 | `mode` | (last_first면 정렬) | `>` `>=` `<` `<=` `!=` | 메트릭 | ✅ | 2 |
+| `growth_rate` | 단위시간당 증가 | `unit` | `bucketing.seconds` | `>` `>=` `<` `<=` | 단위/시간 | ✅ | 2 |
+| `moving_avg` | 이동평균값 | — | `bucketing.seconds+points` | `>` `>=` `<` `<=` | 메트릭 | ✅ | 2 |
+| `trend` | 추세 | — | `bucketing.seconds+points` | `trend==` | enum | ✅ | 2 |
+| `zscore` | 표준화 이상도(창 내부) | `direction` | — | `>` `>=` | σ | ✅ | 2 |
+| `baseline_dev` | 과거 동일시간대 대비 편차% | — | `baseline{days,same_hour}` | `>` `>=` `<` `<=` | % | ❌ 과거 별도쿼리 | 3 |
+
+> **state_check은 별도 type 없음** — `min`/`max`로 흡수:
+> - process_watch `required` 다운 → `min == 0`
+> - process_watch `forbidden` 실행 → `max > 0`
+> - storage_health `status` 위험 → `max >= 2` (PRED_FAIL 이상)
+
+PRD가 정의한 판단 알고리즘 10종이 이 카탈로그에 1:1로 대응합니다(threshold→max/min, percentile→pNN, spike_count, duration, delta, growth_rate, moving_avg, zscore, baseline→baseline_dev, state_check→min/max).
+
+---
+
+## 3. 연산자 / 정량자
+
+### 3.1 연산자 (`when[].op`)
+
+`>=` `>` `<=` `<` `==` `!=` `trend==`
+
+- **경보 방향**을 op로 표현: 높을때(`>=`)·낮을때(`<=`)·상태(`==`).
+- **범위 이탈**(전압 등)은 단일 연산자가 아니라 두 조건 + `combine:"OR"`: `min < 하한` OR `max > 상한`.
+- 저장 시점에 **type↔op 적합성**을 검증합니다([§5](#5-검증-규칙-저장-시점)). 예: `max`에 `<=`는 거부, `trend`는 `trend==`만 허용.
+
+### 3.2 정량자 (`when[].quantifier`)
+
+`expand:"instance"` measure(와일드카드 metric, 또는 proc별)는 장비마다 **fact 집합**을 산출합니다(예: 디스크 `C:`/`D:`, 프로세스 여러 개). 정량자로 "어떻게 묶어 판단할지" 지정:
+
+| quantifier | 의미 | 예 |
+|---|---|---|
+| `any` (기본) | 인스턴스 중 하나라도 조건 충족 | 디스크 중 하나라도 95%↑ |
+| `all` | 모든 인스턴스가 충족 | — |
+| `count` (+`count_min`) | N개 이상 충족 | 센서 3개 이상 과열 |
+
+---
+
+## 4. 측정 → 판단 평가 모델
+
+### 4.1 스케줄 단위 = (process × rule)
+
+- **measure는 스스로 돌지 않습니다.** rule이 자신의 `interval_minutes`마다 트리거되고, 그때 그 rule이 참조하는 measure만 계산합니다.
+- 한 주기 틱에서:
+  1. 그 주기의 rule들의 `when[].fact`에서 **점 앞부분(measure id)** 을 모음 (중복 제거)
+  2. 해당 measure만 ES에서 계산(가능하면 한 쿼리로 묶음) → fact 산출
+  3. fact로 각 rule의 `when` 평가(`combine`/`quantifier`)
+  4. 걸린 장비 → cooldown 확인 → notify 발송
+- **fact 저장소 없음**: 한 rule 주기 안에서 동기로 계산·판단·발송. (예외: `baseline_dev`만 과거 인덱스를 별도 쿼리)
+
+### 4.2 measure가 `window`, rule이 `interval`을 갖는 이유
+
+- `window`(집계창)는 "얼마나 긴 구간을 보고 재나" → **측정의 속성** → measure 소유.
+- `interval`(주기)는 "얼마나 자주 판단하나" → **판단의 속성** → rule 소유.
+- 같은 measure를 주기가 같은 여러 rule이 참조하면 **한 번만 계산**(엔진 최적화: 같은 (process, interval) rule들을 한 job으로 묶어 공유 measure 1회 계산).
+
+### 4.3 메트릭 타입별 ES 집계 전략 (요약)
+
+| fact | ES 7.11.9 전략 |
+|---|---|
+| `max`/`min`/`avg` | `terms(eqpId)` → 메트릭 sub-agg. 단일 패스 |
+| `last` | 버킷별 `top_hits`(@timestamp desc, size 1) — 비쌈, 꼭 필요할 때만 |
+| `pNN` | `percentiles`(TDigest) sub-agg |
+| `spike_count` | `filter(range)` sub-agg의 doc_count |
+| `duration` | `date_histogram` + 클라이언트 최대 연속 streak 계산 |
+| `delta` | `last_minus_first`: `top_hits` 2개 / `max_minus_min`: max-min |
+| `growth_rate` | `scripted_metric`(OLS 기울기) 또는 date_histogram 후 클라이언트 |
+| `moving_avg`/`trend` | `date_histogram` + `moving_fn` (classic moving_avg 금지) |
+| `zscore` | `extended_stats`(avg+std) → `(max-avg)/std`. std≈0/표본<2 가드 필수 |
+| `baseline_dev` | 과거 N일 일별 인덱스 **별도 쿼리** + same_hour range OR |
+
+---
+
+## 5. 검증 규칙 (저장 시점)
+
+`ProfileRepository.create/upsert`에서 `MonitorProfile` 검증 → 위반 시 거부:
+
+1. **measure id 유일** / 한 measure 내 **`type` 유일** (1:1 참조 보장)
+2. 시간축 fact(`duration`/`growth_rate`/`moving_avg`/`trend`)가 있으면 `bucketing` **필수**, `moving_avg`/`trend`엔 `bucketing.points` 필수
+3. `bucketing.seconds × points ≤ window_minutes×60`
+4. `baseline_dev`가 있으면 `baseline` **필수**
+5. 모든 `rule.when.fact = "M.T"` → **M 존재**, **T가 M의 facts에 선언됨**, **op가 T에 허용**(`_ALLOWED_OPS`)
+6. `rule.interval_minutes ≤ 참조 measure의 window_minutes` (사건 누락 방지)
+7. `quantifier=="count"`엔 `count_min` 필수 / `rule.notify`가 `notify` 맵에 존재
+8. **dead fact**(어떤 rule도 참조 안 함)는 거부가 아니라 **경고 로그**
+9. (lint) `metric_kind=="gauge"`인데 `delta`/`growth_rate`를 붙이면 **경고** (거부 아님)
+
+> **합성 후 검증**: 참조 무결성(5·7·8)은 개별 overlay 문서가 아니라 **합성된 effective profile**에 적용합니다([§6.4](#64-제약)). overlay 문서 하나만 보면 참조가 깨져 보여도 상위 scope와 합성하면 충족될 수 있기 때문입니다. 구조 검증(1~4, 6)은 문서 단위.
+
+---
+
+## 6. 스코프 해석 — 계층 상속 (cascade)
+
+한 장비의 **유효 프로파일(effective profile)** 은 그 장비에 매칭되는 scope 문서들을 **넓은 → 좁은 순으로 합성(fold)** 한 결과입니다. 구체적 scope는 더 넓은 scope를 **상속**하고 바꿀 것만 담습니다(= **sparse overlay**).
+
+> 구설계의 "첫 매치 1개만 쓰고 나머지 무시(**replace**)"는 **폐기**합니다 — 예외 장비마다 전역 설정을 통째 복사해야 하고, 전역을 바꿔도 예외 장비엔 반영되지 않아 드리프트를 낳기 때문입니다. (Zabbix 템플릿 상속·k8s kustomize·Nagios `use`와 같은 cascade 방식.)
+
+### 6.1 합성 순서 (좁은 게 이김)
+
+```
+(*,*,*)  →  (process,*,*)  →  (process,model,*)  →  (process,model,eqpId)
 ```
 
-`Scope.to_mongo()`는 alias가 아닌 **실제 EQP_INFO 필드명**(`eqpModel`, `eqpId`)으로 직렬화하므로, JSON 입출력의 alias(`model`, `eqpId`)와 Mongo 저장 키가 다를 수 있음. 정리:
+base에 overlay를 차례로 덮습니다. `uniq_scope` 덕에 각 레벨 최대 1문서라 순서 모호성이 없습니다.
 
-| 위치 | `eqp_model`을 부르는 이름 |
-|------|-------|
-| Python 코드 | `scope.eqp_model` |
-| JSON API 입력/출력 (Pydantic alias) | `model` |
-| **Mongo 저장 키** | `eqpModel` |
+> **현재 도입 범위**: 운영 요구의 대부분은 **전역 + 가장 구체적 1개** 의 2-레이어로 충족됩니다. 중간 레벨(process/model) 예외가 실제로 필요해질 때 4단 fold로 점진 확장합니다(YAGNI). "왜 이 장비가 이 설정인가"가 base+overlay 두 문서로만 설명돼 디버깅이 단순.
 
-자세한 함정은 [ARCHITECTURE.md G10](ARCHITECTURE.md#g10-pydantic-v2는-model_-식별자-예약) 참고.
+### 6.2 합성 규칙 (key 기준 병합)
 
-### 1.4 스코프 해석 우선순위
+| 대상 | 병합 키 | 충돌 시 |
+|------|---------|---------|
+| `measures` | `measure.id` | 구체 문서의 measure가 **통째로 교체** |
+| `rules` | `rule.id` | 구체 문서의 rule이 **통째로 교체** |
+| `notify` | 맵 이름 | 구체 문서의 채널이 **통째로 교체** |
+| `enabled` | — | 한 레벨이라도 `false`면 비활성 (AND, 안전측 실패) |
 
-`ProfileRepository.resolve_profile(process, eqp_model, eqp_id)` (`src/db/repository.py:72`)는 **가장 구체적 → 가장 일반적** 순으로 첫 매치를 반환합니다.
+- 같은 key가 양쪽에 있으면 **구체 문서의 객체가 통째로 이김**(필드 단위 부분 병합 금지 — 결정적·예측가능). 구체 문서에만 있는 key는 추가.
+- "임계 하나만 바꾸기" = 그 **rule 하나만** overlay에 다시 적음(작음). 나머지 measures/rules/notify는 전부 상속 → 전역 변경이 자동 전파.
+- 상속 항목 **삭제**(tombstone), 출처 추적(provenance), effective-profile 조회 API는 **추후 도입**(지금은 단순 override만).
 
-| 우선순위 | 검색 scope |
-|------|-----------|
-| 1 | `(process, eqp_model, eqp_id)` 정확 매칭 |
-| 2 | `(process, eqp_model, "*")` |
-| 3 | `(process, "*", "*")` |
-| 4 | `("*", "*", "*")` (global wildcard) |
+### 6.3 sparse overlay 예시
 
-캐시: `ProfileRepository._resolve_cache` — `cachetools.TTLCache(maxsize=10000, ttl=300)`. 키 = `f"{process}:{eqp_model}:{eqp_id}"`. `upsert()` 호출 시 cache.clear()로 일관성 유지.
-
-### 1.5 Default seed
-
-`seed_default_profile()`이 부팅 시 적용. 변경 시에만 upsert (SHA256 hash 비교) → 운영자 hand-edit 보존.
+전역과 동일하되 EQP001만 CPU critical 임계를 95→85로:
 
 ```jsonc
+// (*,*,*) 전역 문서는 그대로 두고, 아래 문서만 추가
 {
-  "scope": {"process": "*", "eqpModel": "*", "eqpId": "*"},
-  "analysis_configs": [
-    {
-      "metric_pattern": "total_used_pct",
-      "threshold": {"warning": 80.0, "critical": 95.0, "cooldown_minutes": 30},
-      "schedule": {"interval_minutes": 5, "window_minutes": 10}
-    },
-    {
-      "metric_pattern": "*_core_load",
-      "threshold": {"warning": 85.0, "critical": 97.0, "cooldown_minutes": 30},
-      "schedule": {"interval_minutes": 5, "window_minutes": 10}
-    }
+  "scope": { "process": "PHOTO", "model": "MODEL_A", "eqpId": "EQP001" },
+  "rules": [
+    { "id": "cpu_crit", "interval_minutes": 5, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "cpu.max", "op": ">=", "value": 85 } ] }   // 이 rule만 override
   ]
+  // measures/notify/그 외 rules는 전역 상속. cpu_crit가 참조하는 cpu measure도 전역에서 옴.
 }
 ```
 
-정의 위치: `src/db/seed.py:26` `build_default_profile()`.
+### 6.4 제약
 
-### 1.6 인덱스
+- **schedule/interval override는 process 레벨까지만.** 스케줄러는 `(process × rule)` 단위로 job을 등록하므로, eqp 레벨에서 평가 주기를 다르게 주는 것은 거부합니다(임계/value override는 eqp 레벨 가능).
+- **참조 무결성은 합성된 effective profile에서 검증**([§5](#5-검증-규칙-저장-시점)) — overlay 문서 하나만 보면 `cpu_crit`이 참조하는 `cpu` measure가 없어 보이지만, 전역과 합성하면 존재하므로 정상.
 
-#### `uniq_scope` (unique)
+### 6.5 해석 / 캐시
+
+- `resolve_profile(process, eqp_model, eqp_id)`를 "첫 매치 반환"에서 "매칭 scope 문서 수집 → base→specific fold"로 변경. 4개 scope는 단일 `$or` 쿼리로 가져와 N+1 회피.
+- effective profile을 `f"{p}:{m}:{e}"` 키로 캐시(`TTLCache(maxsize=10000, ttl=300)` 유지). 2만 eqpId > maxsize이므로 eqpId가 아니라 **고유 effective profile(버킷) 단위 캐시**로 카디널리티를 낮춤. `upsert()` 시 `cache.clear()`.
+
+> 🔴 **현행 코드의 선결 결함(dead path)**: 분석 엔진은 지금 `resolve_profile(process,"*","*")`로 **process 레벨만** 해석해 그 process의 모든 장비에 같은 설정을 적용합니다. 따라서 model/eqp override 문서를 만들어도 **현재는 알림에 전혀 반영되지 않습니다.** cascade를 살리려면 엔진을 **per-eqp 해석**(동일 effective profile 장비를 버킷팅해 ES 쿼리는 1회 유지)으로 고치는 것이 최우선입니다([§13](#13-구현-상태--현행-코드-대비-차이)).
+
+---
+
+## 7. 인덱스
 
 ```js
 db.RESOURCE_MONITOR_PROFILE.createIndex(
   { "scope.process": 1, "scope.eqpModel": 1, "scope.eqpId": 1 },
   { unique: true, name: "uniq_scope" }
 )
+db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 ```
 
-- 한 프로파일 = 정확히 한 (process, eqpModel, eqpId) 조합. 이 불변조건이 유지되어야 `ProfileRepository.create()`의 `DuplicateKeyError → ProfileAlreadyExistsError` 변환 경로가 동작함.
-- **자동 생성**: `src/startup/repos.py:init_repos()`가 startup 시점에 `create_index(..., unique=True, name="uniq_scope")`를 호출. MongoDB가 컬렉션을 암묵적으로 생성하므로 fresh EARS DB에서도 안전.
-- **멱등성**: 같은 spec으로 재호출해도 MongoDB는 "all indexes already exist"로 no-op 처리 — 매 재시작마다 호출해도 부작용 없음.
-- **Debug Read-Only 모드에서 스킵**: `settings.debug_read_only=True` 일 때 `create_index` 호출은 건너뜁니다. Debug 인스턴스는 운영 중인 production DB 에 연결된다는 전제이므로 인덱스가 이미 존재하며, debug 가 prod 스키마를 변경해선 안 됩니다. 자세한 가드 구조는 [ARCHITECTURE.md §9](ARCHITECTURE.md#9-debug-read-only-모드) 참고.
-- **회귀 가드**:
-  - `tests/unit/test_startup.py::TestInitRepos::test_init_repos_creates_unique_scope_index_on_profile`
-  - `tests/unit/test_startup.py::TestInitRepos::test_init_repos_skips_create_index_in_debug_mode` (debug 가드)
-  - `tests/integration/test_mongo_real.py::test_init_repos_creates_unique_scope_index_on_fresh_db` (fresh motor db 대상)
-  - `tests/integration/test_mongo_real.py::test_init_repos_is_idempotent` (두 번 호출)
-  - `tests/integration/test_mongo_real.py::test_create_duplicate_raises_domain_error` (end-to-end)
-  - `tests/integration/test_lifespan_real.py::test_debug_lifespan_does_not_create_profile_index` (debug 모드 전체 lifespan)
-
-### 1.7 도메인 예외
-
-| 예외 | 발생 시점 | HTTP 매핑 (Phase 1+) |
-|------|----------|--------------------|
-| `ProfileAlreadyExistsError` | `create()` 시 동일 scope가 이미 존재 | 409 Conflict |
-| `ProfileNotFoundError` | `find_by_scope()` 결과가 None일 때 호출자가 raise | 404 Not Found |
-
-정의: `src/db/models.py:23-32`.
-
-### 1.8 리포지토리 연산 요약
-
-| 메서드 | 동작 | 캐시 영향 |
-|--------|------|----------|
-| `create(profile)` | `insert_one`. DuplicateKey → 도메인 예외 변환 | (영향 없음) |
-| `upsert(profile)` | `replace_one` filter=`scope.*`, `upsert=True` | `_resolve_cache.clear()` |
-| `find_by_scope(scope)` | `find_one` by `scope.*` (와일드카드 필드는 필터 omit) | (read-through 아님) |
-| `resolve_profile(p, m, e)` | 1.4의 4단계 lookup, TTL 캐시 | hit 시 DB 우회 |
+- 한 프로파일 = 정확히 한 `(process, eqpModel, eqpId)` 조합. `create()`의 `DuplicateKeyError → ProfileAlreadyExistsError` 변환이 이 불변조건에 의존.
+- `init_repos()`가 startup 시 멱등 생성. Debug Read-Only 모드에선 스킵.
 
 ---
 
-## 2. `RESOURCE_MONITOR_RULE`
+## 8. ES 인덱스 전제 + 미해결 (구현 전 확인 필수)
 
-**상태**: 상수만 정의됨, Phase 0 코드에 **모델/리포지토리/사용처 0건**.
+### 8.1 확정된 사실
 
-```python
-COLL_RULE = "RESOURCE_MONITOR_RULE"
-```
+- 인덱스 패턴: `{process_lower}_all-{YYYY.MM.DD}` (일별). 자정 가로지르면 콤마 결합.
+- 문서 모양: `{ "@timestamp": date, "eqpId": text+.keyword, "process": text+.keyword, "<metric_name>": double, ... }` — **메트릭이 각자 top-level numeric 필드**.
+- 그룹핑: `terms(eqpId.keyword, size=30000)`.
 
-PRD §3 기준으로는 임계값 단순 비교를 넘어 **지표 조합 rule engine**(Phase 3)을 위한 컬렉션 후보입니다. 실제 스키마는 Phase 3 설계 시 확정되므로 본 문서는 **자리 표시만** 합니다.
+### 8.2 🔴 미해결 (이 스키마의 정확성이 여기에 의존)
 
-### Phase 3 설계 시 결정해야 할 항목 (참고)
-- rule 식별자 / 활성 플래그
-- trigger 표현식 형식 (DSL? JSON expression tree?)
-- rule ↔ profile 관계 (1:N, M:N?)
-- 우선순위 / suppression 규칙
-- audit (생성자, 변경 이력)
+1. **EARS `proc`의 ES 착지 필드** — 현재 문서의 `process` 필드는 ESID/collector 그룹이지 EARS proc(`@system`/`python.exe`/`Ethernet`)이 **아닐 가능성**이 큼. 프로세스·NIC·process_watch 메트릭(`group_by:[eqpId,proc]`)이 전부 여기 의존. **EARS→ES 변환에서 proc이 어느 필드로 색인되는지 확인 → 없으면 `proc.keyword` 표준화 필요.**
+2. **`category`의 ES 색인 여부** — `cpu`/`memory`의 `total_used_pct`가 같은 필드명이라 **`category.keyword` term 필터 없이는 섞여 집계됨**(현 코드의 잠재 버그). category가 색인 안 되면 인입 매핑에 추가하거나 필드명을 category-prefix로 변경.
+3. **baseline 인덱스 보존** — `baseline_dev`는 과거 7일 일별 인덱스가 존재해야 함.
+4. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·`percentile`(표본 충분성) 의미에 직결.
 
 ---
 
-## 3. `EQP_INFO` (외부)
+## 9. `EQP_INFO` (외부, read-only)
 
-**소유자**: Akka 서버 (WebManager 측에서 master/CRUD).
-**RMS 액세스**: **read-only**. 어떤 경우에도 RMS가 write 하지 않음.
-**Pydantic 모델**: 없음 — RMS는 distinct/count 결과만 사용.
-**리포지토리**: `EqpInfoRepository` (`src/db/repository.py:120`)
+**소유자**: Akka 서버. **RMS 액세스**: read-only (절대 write 안 함). **리포지토리**: `EqpInfoRepository`.
 
-### 3.1 RMS가 사용하는 필드만
+### 9.1 RMS가 쓰는 필드
 
-| 필드 | 타입 | 사용 위치 |
-|------|------|----------|
-| `eqpId` | string | 장비 식별자 (Phase 1+ 알림 본문) |
-| `process` | string | `get_distinct_processes()` — process 단위 파티셔닝의 키 |
-| `eqpModel` | string | `Scope` 매핑 (Phase 1+ resolve_profile) |
-| `onoff` | int (0/1) | **활성 필터** |
-| `webmanagerUse` | int (0/1) | **활성 필터** |
+| 필드 | 용도 |
+|------|------|
+| `eqpId` | 장비 식별자 (알림 본문) |
+| `process` | `get_distinct_processes()` — 파티셔닝 키 |
+| `eqpModel` | scope 매핑 (resolve_profile) |
+| `localpc`, `ipAddr`, `line`, `category` | 알림 본문 |
+| `onoff`, `webmanagerUse` | **활성 필터** (둘 다 1) |
 
-> 풀 스키마(line, category, ipAddr, localpc 등 추가 필드)는 `~/Developer/ARS/WebManager/docs/SCHEMA.md` 참고.
-
-### 3.2 활성 필터
+### 9.2 활성 필터
 
 ```python
 EqpInfoRepository._ACTIVE_FILTER = {"onoff": 1, "webmanagerUse": 1}
 ```
 
-이 필터는 **모든 read 경로에 자동 적용**됩니다:
+모든 read 경로에 자동 적용 → decommissioned(`onoff=0`)·미관리(`webmanagerUse=0`) 장비는 분석 대상에서 제외. **반드시 `EqpInfoRepository`를 통해 접근**(직접 쿼리하면 필터 누락).
 
-| 메서드 | 적용 |
-|--------|------|
-| `get_distinct_processes()` | `coll.distinct("process", filter=_ACTIVE_FILTER)` |
-| `count_active_by_process(p)` | `coll.count_documents({"process": p, **_ACTIVE_FILTER})` |
+---
 
-→ **decommissioned PC(`onoff=0`)나 webmanager 미관리(`webmanagerUse=0`) 장비는 절대로 분석 대상이 되지 않음**. 직접 EQP_INFO에 쿼리하면 이 필터가 빠질 수 있으므로, **반드시 `EqpInfoRepository`를 통해서** 접근.
+## 10. 예외 계약
 
-### 3.3 권장 인덱스 (운영팀 확인 필요)
+`src/db/repository.py`의 public async 메서드는 raw `pymongo.errors.*`를 누출하지 않고 도메인 예외로 변환:
 
-운영팀 사전 확인 체크리스트(plan §사전 확인 사항 4):
+| 원본 (pymongo) | 변환 | 의미 |
+|---|---|---|
+| `ServerSelectionTimeoutError`/`NetworkTimeout`/`ConnectionFailure` | `MongoUnavailableError` | 연결 불가 (job이 `reason="mongo_unavailable"` 라벨링) |
+| `DuplicateKeyError` (`create`만) | `ProfileAlreadyExistsError` | unique scope 충돌 → 409 |
+| `find` 결과 None | `ProfileNotFoundError` (호출자) | 404 |
 
-```js
-db.EQP_INFO.getIndexes()
-// 기대: { process: 1 }, { process: 1, eqpModel: 1 }, { eqpId: 1 } 존재
+---
+
+## 11. 함정 (Pitfalls)
+
+| # | 함정 | 올바른 사용 |
+|---|------|------------|
+| P1 | `scope.eqpModel` 카멜케이스 | Mongo 키는 `eqpModel`(snake `eqp_model` 아님). Python은 `Scope` 객체로만 다루기 |
+| P2 | `scope.process` ≠ `measure.proc` | 전자=적용범위/파티션, 후자=EARS row 정체성 |
+| P3 | `measureId.type` 점 표기 | 점 앞=measure id, 점 뒤=fact(=type). 둘 다 검증으로 존재 강제 |
+| P4 | 한 measure 같은 type 중복 | 금지(참조 모호). 다른 임계/창 필요하면 measure 분리 또는 rule 분리 |
+| P5 | 임계가 measure·rule 두 곳 | `spike_count.over`=사건 경계(measure), `rule.value`=경보 기준(rule). 의도된 계층 |
+| P6 | 경보 방향을 max로만 | 낮을때는 `min`+`<=`, 범위이탈은 두 조건 OR. type↔op 적합성 검증됨 |
+| P7 | category 필터 누락 | ES 쿼리에 `category.keyword` term 필수([§8.2](#82--미해결-이-스키마의-정확성이-여기에-의존)) |
+| P8 | 활성 필터 누락 | `EqpInfoRepository`만 사용 |
+| P9 | 특정 장비 override 시 전역 통째 복사 | **금지**. overlay엔 바꿀 measure/rule만(나머지 상속, [§6](#6-스코프-해석--계층-상속-cascade)). 전체 복사는 드리프트 유발 |
+
+---
+
+## 12. 전체 JSON 예시 (전역 기본 프로파일)
+
+```jsonc
+{
+  "scope": { "process": "*", "model": "*", "eqpId": "*" },
+  "enabled": true,
+  "governance": { "version": 1, "updated_by": "system", "change_reason": "initial" },
+
+  "measures": [
+    { "id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge",
+      "bucketing": { "seconds": 30 },
+      "baseline": { "days": 7, "same_hour": true, "min_points": 30 },
+      "facts": [
+        { "type": "max" }, { "type": "avg" }, { "type": "p95" },
+        { "type": "spike_count", "over": 90, "direction": "above" },
+        { "type": "duration",    "over": 80, "direction": "above" },
+        { "type": "baseline_dev" }
+      ] },
+
+    { "id": "mem_used", "category": "memory", "metric": "total_used_pct", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge", "facts": [ { "type": "max" } ] },
+    { "id": "mem_free", "category": "memory", "metric": "total_free_pct", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge", "facts": [ { "type": "min" } ] },
+    { "id": "mem_size", "category": "memory", "metric": "total_used_size", "proc": "@system",
+      "window_minutes": 60, "metric_kind": "gauge", "bucketing": { "seconds": 300, "points": 6 },
+      "facts": [ { "type": "growth_rate", "unit": "per_hour" }, { "type": "trend" } ] },
+
+    { "id": "disk", "category": "disk", "metric": "*", "proc": "@system",
+      "window_minutes": 30, "metric_kind": "gauge", "expand": "instance",
+      "bucketing": { "seconds": 3600 },
+      "facts": [ { "type": "max" }, { "type": "growth_rate", "unit": "per_day" } ] },
+
+    { "id": "temp", "category": "temperature", "metric": "*", "proc": "@system",
+      "window_minutes": 30, "metric_kind": "gauge", "expand": "instance", "facts": [ { "type": "max" } ] },
+    { "id": "fan", "category": "fan", "metric": "*", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge", "expand": "instance", "facts": [ { "type": "min" } ] },
+    { "id": "volt_vcore", "category": "voltage", "metric": "CPU_Vcore", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge", "facts": [ { "type": "min" }, { "type": "max" } ] },
+
+    { "id": "gpu_load", "category": "gpu", "metric": "*_core_load", "proc": "@system",
+      "window_minutes": 15, "metric_kind": "gauge", "expand": "instance",
+      "facts": [ { "type": "p95" }, { "type": "spike_count", "over": 95, "direction": "above" } ] },
+
+    { "id": "ssd_life", "category": "storage_smart", "metric": "*_remaining_life", "proc": "@system",
+      "window_minutes": 1440, "metric_kind": "gauge", "expand": "instance", "facts": [ { "type": "min" } ] },
+    { "id": "ssd_err", "category": "storage_smart", "metric": "*_media_errors", "proc": "@system",
+      "window_minutes": 1440, "metric_kind": "counter", "expand": "instance",
+      "facts": [ { "type": "delta", "mode": "last_minus_first" } ] },
+    { "id": "disk_health", "category": "storage_health", "metric": "*_status", "proc": "@system",
+      "window_minutes": 30, "expand": "instance", "facts": [ { "type": "max" } ] },
+
+    { "id": "proc_required", "category": "process_watch", "metric": "required", "proc": "*",
+      "window_minutes": 5, "expand": "instance", "facts": [ { "type": "min" } ] },
+    { "id": "proc_forbidden", "category": "process_watch", "metric": "forbidden", "proc": "*",
+      "window_minutes": 5, "expand": "instance", "facts": [ { "type": "max" } ] },
+    { "id": "proc_mem", "category": "memory", "metric": "used", "proc": "*",
+      "window_minutes": 60, "metric_kind": "gauge", "expand": "instance",
+      "bucketing": { "seconds": 300 }, "facts": [ { "type": "growth_rate", "unit": "per_hour" } ] },
+    { "id": "net_recv", "category": "network", "metric": "recv_rate", "proc": "*",
+      "window_minutes": 15, "metric_kind": "gauge", "expand": "instance",
+      "facts": [ { "type": "spike_count", "over": 100000000, "direction": "above" } ] }
+  ],
+
+  "rules": [
+    { "id": "cpu_warn", "interval_minutes": 5, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "cpu.max", "op": ">=", "value": 80 } ] },
+    { "id": "cpu_crit", "interval_minutes": 5, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "cpu.max", "op": ">=", "value": 95 } ] },
+    { "id": "cpu_anomaly", "interval_minutes": 5, "severity": "CRITICAL", "combine": "AND", "notify": "default",
+      "when": [
+        { "fact": "cpu.p95", "op": ">", "value": 80 },
+        { "fact": "cpu.spike_count", "op": ">", "value": 5 },
+        { "fact": "cpu.duration", "op": ">", "value": 180 }
+      ] },
+
+    { "id": "mem_high",     "interval_minutes": 5, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "mem_used.max", "op": ">=", "value": 90 } ] },
+    { "id": "mem_low_free", "interval_minutes": 5, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "mem_free.min", "op": "<=", "value": 5 } ] },
+    { "id": "mem_leak", "interval_minutes": 5, "severity": "CRITICAL", "combine": "AND", "notify": "default",
+      "when": [
+        { "fact": "mem_size.trend", "op": "trend==", "value": "increasing" },
+        { "fact": "mem_size.growth_rate", "op": ">", "value": 52428800 }
+      ] },
+
+    { "id": "disk_full",    "interval_minutes": 30, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "disk.max", "op": ">=", "value": 95, "quantifier": "any" } ] },
+    { "id": "temp_high",    "interval_minutes": 10, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "temp.max", "op": ">=", "value": 90, "quantifier": "any" } ] },
+    { "id": "fan_low",      "interval_minutes": 10, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "fan.min", "op": "<=", "value": 300, "quantifier": "any" } ] },
+    { "id": "volt_out", "interval_minutes": 5, "severity": "WARNING", "combine": "OR", "notify": "default",
+      "when": [
+        { "fact": "volt_vcore.min", "op": "<", "value": 1.1 },
+        { "fact": "volt_vcore.max", "op": ">", "value": 1.4 }
+      ] },
+
+    { "id": "gpu_hot",      "interval_minutes": 5,  "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "gpu_load.p95", "op": ">=", "value": 95, "quantifier": "any" } ] },
+    { "id": "ssd_life_low", "interval_minutes": 60, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "ssd_life.min", "op": "<=", "value": 20, "quantifier": "any" } ] },
+    { "id": "ssd_err_inc",  "interval_minutes": 60, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "ssd_err.delta", "op": ">", "value": 0, "quantifier": "any" } ] },
+    { "id": "disk_failing", "interval_minutes": 30, "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "disk_health.max", "op": ">=", "value": 2, "quantifier": "any" } ] },
+
+    { "id": "proc_down",          "interval_minutes": 5,  "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "proc_required.min", "op": "==", "value": 0, "quantifier": "any" } ] },
+    { "id": "proc_forbidden_run", "interval_minutes": 5,  "severity": "CRITICAL", "notify": "default",
+      "when": [ { "fact": "proc_forbidden.max", "op": ">", "value": 0, "quantifier": "any" } ] },
+    { "id": "proc_mem_leak",      "interval_minutes": 10, "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "proc_mem.growth_rate", "op": ">", "value": 104857600, "quantifier": "any" } ] },
+    { "id": "net_spike",          "interval_minutes": 5,  "severity": "WARNING",  "notify": "default",
+      "when": [ { "fact": "net_recv.spike_count", "op": ">", "value": 5, "quantifier": "any" } ] }
+  ],
+
+  "notify": {
+    "default": { "cooldown_minutes": 30, "email_code": "RESOURCE_MONITOR" }
+  }
+}
 ```
 
-`get_distinct_processes()`는 `{process: 1}` 인덱스가 있으면 covered query로 전체 스캔을 피할 수 있습니다.
+---
+
+## 13. 구현 상태 — 현행 코드 대비 차이
+
+이 v2 스키마는 **미구현**입니다. 현행 코드와의 차이:
+
+| 영역 | 현행 코드 (구설계) | v2 목표 | 작업 |
+|------|------------------|---------|------|
+| `src/db/models.py` | `MonitorProfile(scope + analysis_configs[]{metric_pattern, threshold, schedule})` | `measures`/`rules`/`notify` + 검증 | **모델 교체** |
+| `src/db/seed.py` | 단순 threshold 2개 | 새 구조 기본 프로파일 | 갱신 |
+| `src/es/queries.py` | `terms(eqpId)` + max, **category 필터 없음** | `category` 필터 + `group_by(eqpId×proc)` + percentile/spike/extended_stats/date_histogram | 확장 |
+| `src/analyzer/es_parser.py` | `{field}_{agg}` 단일값 | type별 파싱(percentiles values, extended_stats) | 확장 |
+| `src/analyzer/engine.py` | threshold 단순 비교 + state_check + **process 레벨만 resolve (override dead path)** | measure→fact 계산 → rule 평가(combine/quantifier) + **per-eqp 해석** | 재작성 |
+| `src/db/repository.py` | `resolve_profile` 첫 매치 1개 (replace) | 매칭 scope `$or` 수집 → cascade fold, effective 캐시 | 변경 |
+| `src/analyzer/metric_resolver.py` | `get_agg_type`(required/forbidden만) | type 카탈로그 enum 공유 | 확장 |
+| `src/cache/cooldown.py` | 키 `{eqp}:{category}:{metric}` | `{process}:{eqp}:{proc}:{notify}:{severity}` | 키 확장 |
+| `src/config/constants.py` | `COLL_RULE` 존재 | 제거 | 정리 |
+| `tests/**` | 구모델 기준 | 참조무결성·type↔op·quantifier 회귀 | 추가 |
+
+> `uniq_scope` 인덱스·`EqpInfoRepository`·예외 계약은 **그대로 재사용**하되, `resolve_profile`은 "첫 매치"에서 "cascade fold"로 바뀝니다([§6](#6-스코프-해석--계층-상속-cascade)).
+>
+> 🔴 **최우선 선결 작업**: 엔진 per-eqp 해석. 현재 process 레벨만 resolve해 override가 전혀 적용 안 됨(dead path) — 이걸 고치지 않으면 cascade든 replace든 model/eqp 설정이 무의미합니다.
 
 ---
 
-## 4. 핵심 함정 (Pitfalls)
+## 14. Phase 계획
 
-다음 실수가 반복되지 않도록 박제합니다.
-
-### P1. `eqpModel` 카멜케이스
-- ❌ `{"model": "..."}`, `{"eqp_model": "..."}` — Mongo에 저장될 키가 아님
-- ✅ Mongo 직접 쿼리 시에는 `{"scope.eqpModel": "..."}` 또는 `{"eqpModel": "..."}`
-- Python 코드에서는 `Scope` 객체로만 다루기 — 매핑은 모델이 알아서
-
-### P2. `eqpId` 카멜케이스
-- 같은 함정. snake_case `eqp_id` 아님.
-
-### P3. 활성 필터 누락
-- ❌ `coll.distinct("process")` 직접 호출
-- ✅ `EqpInfoRepository.get_distinct_processes()`만 사용
-
-### P4. unique index 생성 시점 (§1.6)
-- `init_repos()`가 매 startup마다 `create_index(..., unique=True, name="uniq_scope")`를 호출
-- MongoDB의 `createIndex` 는 컬렉션 미존재 시 자동 생성 + 기존 인덱스에는 no-op → **매번 호출해도 안전**
-- 운영팀이 수동으로 만들 필요 없음. `init_repos()` 호출 전에 생긴 legacy 중복 데이터는 build 실패 사유가 됨 — 그 경우 중복 해결 후 재시작
-
-### P5. `populate_by_name=True` 의존
-- `Scope` 모델은 `populate_by_name=True`라 alias `model` 또는 Python 이름 `eqp_model` 둘 다 입력 허용
-- 하지만 `extra="forbid"`라 다른 키는 거부 — 잘못된 키로 생성하면 `ValidationError`
-
-### P6. ObjectId ↔ str 변환
-- Pydantic의 `MonitorProfile.id`는 `str | None`
-- `from_mongo()`에서 `_id`를 `str(_id)`로 변환
-- `to_mongo()`는 `_id` 출력하지 않음 (Mongo가 자동 부여하도록)
+- **Phase 1**: `max`/`min`/`avg`/`last`/`pNN`/`spike_count` + state(min/max) + `quantifier` + `group_by(proc)` + **category 필터** + cooldown 키 확장 + 저장 시 검증. (PRD 단순 임계·process_watch·디스크/온도 와일드카드·CPU 복합 p95+spike까지)
+- **Phase 2**: `duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore` (date_histogram·scripted_metric·top_hits 인프라) + DATA_MISSING(데이터 미수신 감지).
+- **Phase 3**: `baseline_dev` (과거 인덱스 쿼리) + escalation/수신자 라우팅 확장.
 
 ---
 
-## 4.1 Exception Contract (v6 P1-1)
-
-`src/db/repository.py` 의 모든 public async 메서드는 raw `pymongo.errors.*` 를 호출자에게 누출하지 않습니다. boundary 에서 다음과 같이 도메인 예외로 변환:
-
-| 원본 예외 (pymongo) | 변환된 예외 (`src/db/models.py`) | 의미 |
-|---------------------|--------------------------------|------|
-| `ServerSelectionTimeoutError` | `MongoUnavailableError` | Mongo 연결 불가 |
-| `NetworkTimeout` | `MongoUnavailableError` | replicate set 와 통신 끊김 |
-| `ConnectionFailure` | `MongoUnavailableError` | TCP/소켓 끊김 |
-| `DuplicateKeyError` (`ProfileRepository.create` 만) | `ProfileAlreadyExistsError` | unique index 충돌 — 비즈니스 로직 |
-
-`MongoUnavailableError` 는 `_job_wrapper` (`src/scheduler/jobs.py`) 가 `JOB_TOTAL{reason="mongo_unavailable"}` 라벨로 분류하기 위해 필요합니다 (P1-2). 새 repository 메서드를 추가할 때는 반드시 같은 패턴으로 wrapping 하세요:
-
-```python
-try:
-    return await self._collection.find_one(...)
-except _MONGO_UNAVAILABLE_EXC as e:
-    raise MongoUnavailableError(f"...: {e}") from e
-```
-
-회귀 가드: `tests/unit/test_db_repository.py::TestMongoUnavailableTranslation` (parametrized).
-
----
-
-## 5. Phase 0 알려진 갭 / 후속 작업
-
-| # | 갭 | 영향 | 해결 위치 | 우선순위 |
-|---|----|------|----------|---------|
-| 1 | ~~`RESOURCE_MONITOR_PROFILE`에 unique index 자동 생성 없음~~ | ~~`create()`의 중복 검출 미동작~~ | `src/startup/repos.py:init_repos()` | **Done** (2026-04-07) |
-| 2 | `RESOURCE_MONITOR_RULE` 스키마 미정의 | Phase 3 시작 전 결정 필요 | Phase 3 설계 | Low (Phase 3) |
-| 3 | EQP_INFO 인덱스 운영 검증 미완료 | distinct 쿼리 성능 저하 가능 | 운영팀 확인 + 필요 시 추가 | Medium |
-| 4 | 프로파일 변경 audit 없음 | 누가 언제 변경했는지 추적 불가 | Phase 1 admin API에서 history 컬렉션 추가 검토 | Low |
-
----
-
-## 6. 관련 문서
+## 15. 관련 문서
 
 | 문서 | 내용 |
 |------|------|
-| [README.md](README.md) | 진입점, 디렉토리 맵 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 시스템 설계 + Gotchas (G10: Pydantic `model_*` 예약어) |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | TDD / 개발 워크플로우 |
-| [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md) | Phase 0 요구사항 (§5 EARS DB 스키마) |
-| `~/Developer/ARS/WebManager/docs/SCHEMA.md` | EARS DB 외부 컬렉션 풀 스키마 (EQP_INFO 포함) |
-| `src/db/models.py` | 본 문서의 Pydantic 모델 정의 (single source of truth) |
-| `src/db/repository.py` | 리포지토리 로직 |
-| `src/db/seed.py` | 기본 시드 정의 |
-| `src/config/constants.py` | 컬렉션 이름 상수 |
+| [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md) | 원본 요구사항 (§5 — **구설계 2분할, v2와 불일치. 갱신 예정**) |
+| [docs/ADMIN-UI-LEGIBILITY.md](docs/ADMIN-UI-LEGIBILITY.md) | 관리 UI/시인성 설계 — 왜 단일 컬렉션 유지인가(UI/UX 근거) + 권장 API/UI 방향 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 설계 배경 + Gotchas (**v2 반영 예정**) |
+| [README.md](README.md) / [CONTRIBUTING.md](CONTRIBUTING.md) | 진입점 / 워크플로우 (용어 갱신 예정) |
+| `~/Developer/ARS/ResourceAgent/docs/EARS-METRICS-REFERENCE.md` | 실제 수집 메트릭(category/metric/proc/value) 정의 |
+| `~/Developer/ARS/WebManager/docs/SCHEMA.md` | EARS DB 외부 컬렉션 풀 스키마 (EQP_INFO) |
+| `src/db/models.py` | v2 구현 후 Pydantic 단일 진실 소스 (현재 미반영) |

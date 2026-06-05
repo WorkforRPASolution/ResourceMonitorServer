@@ -10,7 +10,8 @@
 |------|------|
 | [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md) | Phase 0 요구사항/스펙 (무엇을 만드는가) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 시스템 설계, 분산 조정, 라이브러리 버전 고정 이유, **함정/Gotchas** |
-| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 (RESOURCE_MONITOR_PROFILE, EQP_INFO 등) |
+| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 — **v2: 단일 `RESOURCE_MONITOR_PROFILE`(measures/rules/notify) + scope 계층 상속** (권위 스펙) |
+| [docs/ADMIN-UI-LEGIBILITY.md](docs/ADMIN-UI-LEGIBILITY.md) | 관리 UI / 시인성 설계 — 왜 단일 컬렉션인가(UI/UX 근거) + 권장 API/UI 방향 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 개발 환경 설정, TDD 워크플로우, 테스트 실행, 코딩 컨벤션 |
 | [docs/archive/phase0-plan-v6.md](docs/archive/phase0-plan-v6.md) | Phase 0 v6 구현 계획 (Step 0~10 + 8.5 Resilience Hardening) — 완료 보관용 |
 
@@ -23,7 +24,7 @@ ResourceAgent (Go)
           ResourceMonitorServer (이 프로젝트)
             ├─ Zookeeper  : leader election + process partitioning + 분산 락
             ├─ Redis      : alert cooldown TTL (Redis 다운 시 local fallback)
-            ├─ MongoDB    : 모니터링 프로파일 / 기준정보 (EARS DB)
+            ├─ MongoDB    : 모니터링 프로파일 / 기준정보 (EARS DB, RESOURCE_MONITOR_PROFILE)
             └─ Email API  : Akka HttpWebServer (/EmailNotify)
 ```
 
@@ -111,6 +112,8 @@ Debug 모드 전용 옵션:
 | `POST /admin/scheduler/reload` | 프로파일 재로드 |
 
 ## 디렉토리 구조
+
+> 🟡 아래는 **현재 코드(v1: `analysis_configs` 단순 threshold)** 기준입니다. 기준정보 스키마는 **v2(단일 컬렉션 `measures`/`rules`/`notify` + cascade 상속)** 로 재설계됐으나 미구현 — `db/`·`analyzer/`·`es/`가 v2로 바뀝니다. 권위 스펙 [SCHEMA.md](SCHEMA.md), 현행 대비 차이 [SCHEMA.md §13](SCHEMA.md).
 
 ```
 src/

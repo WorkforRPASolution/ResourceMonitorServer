@@ -312,6 +312,8 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 ### 8.4 Analysis Engine (Phase 1)
 
+> 🟡 아래는 **현재 코드(v1: `analysis_configs` + process 레벨 단일 threshold)** 기준 팁입니다. 기준정보 스키마는 **v2(measures/rules/notify + cascade, 엔진 per-eqp 해석)** 로 재설계됐으나 미구현 — 목표 모델은 [SCHEMA.md](SCHEMA.md) / [ARCHITECTURE.md §2.2](ARCHITECTURE.md) 참고.
+
 - Threshold 미동작? → (1) metric_pattern 와일드카드가 ES 인덱스의 실제 필드에 매칭되는지 확인, (2) `get_numeric_field_names()` 캐시가 빈 리스트를 반환하는지 (자정 인덱스 롤), (3) `agg_type` 이 올바른지 (`state_check` vs `max`).
 - 이메일 미발송? → (1) `is_cooling_down_batch` 결과 확인, (2) `email_client.send_alert` 반환값, (3) Akka `EMAIL_TEMPLATE_REPOSITORY` 에 `code=RESOURCE_MONITOR`, `sub_code=CPU_WARNING` 등 템플릿 등록 여부.
 - State check breach: `required` 필드 min=0 → breach (프로세스 다운), `forbidden` 필드 max>0 → breach (금지 프로세스 실행).
@@ -388,7 +390,8 @@ PR 보내기 전에:
 |------|------|
 | [README.md](README.md) | 개요, 빠른 시작, 디렉토리 맵 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 시스템 설계, 분산 조정, **Gotchas** |
-| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 (PROFILE, EQP_INFO 등) |
+| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 — **v2: 단일 PROFILE(measures/rules/notify) + cascade** (권위 스펙) |
+| [docs/ADMIN-UI-LEGIBILITY.md](docs/ADMIN-UI-LEGIBILITY.md) | 관리 UI / 시인성 설계 |
 | [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md) | Phase 0 요구사항 |
 | [docs/archive/phase0-plan-v6.md](docs/archive/phase0-plan-v6.md) | Phase 0 v6 구현 계획 (완료 보관용) |
 | `/Users/hyunkyungmin/Developer/ARS/CLAUDE.md` | 상위 워크플로우 정책 |
