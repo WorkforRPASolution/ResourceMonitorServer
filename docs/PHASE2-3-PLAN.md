@@ -127,6 +127,7 @@ ES 7.11.9 전제: `date_histogram` + `moving_fn`(pipeline), `extended_stats`, `t
 - **표본 부족/0 분모**: `growth_rate`(점<2)·`zscore`(std≈0)·`baseline_dev`(min_points 미달) 전부 가드 → `DATA_MISSING`로 강등하거나 스킵(스킵 시 silent 방지 위해 로그).
 - **`top_hits` 비용**: `delta`(asc+desc)·`last`는 버킷당 hit 수집이라 비쌈 — eqp 수 × 버킷 폭 주의.
 - **baseline 인덱스 보존**([SCHEMA §8.2](../SCHEMA.md)): 운영 인덱스 TTL이 N일보다 짧으면 `baseline_dev` 불가 — 인프라 전제 확인 필수.
+- **인덱스 날짜 = UTC**([SCHEMA §8.1/§8.2 #3·#6](../SCHEMA.md)): 모든 인덱스 날짜 계산은 UTC 캘린더 기준이다(인입이 UTC 자정 롤오버). `baseline_dev`가 과거 N일 인덱스명을 만들 때도 **반드시 UTC 날짜**로 계산해야 하며(`{proc}_all-{과거 UTC날짜}`), `local_tz`로 만들면 KST 00:00–09:00에 엉뚱한 날짜 인덱스를 조회하게 된다. 인입이 UTC 롤오버를 유지한다는 전제에 의존(틀어지면 `es_index_tz` 설정값화 필요).
 - **샘플 emit 주기**([SCHEMA §8.2](../SCHEMA.md)): `duration`(bucket_seconds)·`growth_rate`(점 간격)·percentile(표본 충분성) 의미에 직결.
 - **회귀 위험**: 게이트(`IMPLEMENTED_PHASES`)를 Phase 전체 green 이전에 올리면 미완 fact가 실알림으로 샘. **단계별 게이트** 엄수.
 

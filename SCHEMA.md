@@ -357,10 +357,11 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 2. ~~`category`의 ES 색인 여부~~ → **`EARS_CATEGORY`** 로 색인됨. cpu/memory의 동일 `total_used_pct`는 `EARS_CATEGORY` term으로 분리 집계 (통합 테스트 E8이 혼입 회귀 가드).
 3. ~~인덱스 일자 롤오버 시간대~~ → **UTC 확정**(운영 인덱스의 `EARS_TIMESTAMP` min/max가 `00:00:00Z~23:59:59Z`). 과거 `resolve_index_range`가 `local_tz`(Asia/Seoul)로 인덱스 날짜를 골라 KST 00:00–09:00에 엉뚱/빈 인덱스를 여는 버그가 있었으나, **인덱스 날짜를 UTC로 계산하도록 수정**(test_queries `test_index_date_uses_utc_not_local_tz` 가드).
 
-남은 의존(Phase 2/3 구현 시점에 확인):
+남은 의존 / 운영 전제:
 
-4. **baseline 인덱스 보존** — `baseline_dev`(Phase 3)는 과거 N일 일별 인덱스가 존재해야 함.
-5. **샘플 emit 주기** — `spike_count`(샘플수)·`duration`(bucket_seconds)·percentile(표본 충분성) 의미에 직결.
+4. **baseline 인덱스 보존** (Phase 3) — `baseline_dev`는 과거 N일 일별 인덱스가 존재해야 함.
+5. **샘플 emit 주기** (Phase 2/3) — `spike_count`(샘플수)·`duration`(bucket_seconds)·percentile(표본 충분성) 의미에 직결.
+6. **인입의 UTC 롤오버 유지** (지속 운영 전제) — 위 #3 수정은 인덱스가 **UTC 자정에 롤오버**한다는 데 의존합니다. 수집팀(EARS→ES 인입)이 일별 인덱스를 로컬 자정 기준으로 바꾸면 `resolve_index_range`가 다시 어긋납니다. ① 인입팀과 **"UTC 롤오버 유지"를 합의**하거나, ② 더 견고히 하려면 인덱스 날짜 시간대를 **설정값(예: `es_index_tz`)으로 분리**하세요. (`baseline_dev`의 과거 인덱스 날짜 계산도 같은 UTC 규약을 따라야 함 — [PHASE2-3-PLAN §5](docs/PHASE2-3-PLAN.md).)
 
 ---
 
