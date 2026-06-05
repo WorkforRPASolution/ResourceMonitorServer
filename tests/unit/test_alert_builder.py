@@ -40,7 +40,8 @@ class TestBuildAlertRequest:
             _breach(), _EQP, "CVD", _make_settings(),
             NotifyChannel(cooldown_minutes=30), window_minutes=15,
         )
-        assert req.hostname == "HOST-01"
+        assert req.hostname == "EQP01"  # eqpId, NOT localpc — Akka가 hostname을 eqpId로 취급
+        assert req.hostname != "HOST-01"  # localpc 아님 (eqpId 회귀 가드)
         assert req.ip == "10.0.0.1"
         assert req.eqp_model == "MODEL-X"
         assert req.line == "LINE-A"

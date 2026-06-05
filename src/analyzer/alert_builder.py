@@ -47,7 +47,10 @@ def build_alert_request(
         )
 
     return EmailAlertRequest(
-        hostname=eqp_info.get("localpc", ""),
+        # hostname=eqpId: Akka HttpWebServer는 EmailHttpDataFormat.hostname을
+        # eqpId로 취급(getEmailCategory/getSdwt가 EQP_INFO를 eqpId로 조회,
+        # @Hostname 치환·메일 제목). PRD §장비 ID 명세와 일치. localpc(PC명) 아님.
+        hostname=breach.eqp_id,
         ip=eqp_info.get("ipAddr", ""),
         app=settings.email_app_name,
         process=process,

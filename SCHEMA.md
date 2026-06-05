@@ -373,10 +373,11 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 
 | 필드 | 용도 |
 |------|------|
-| `eqpId` | 장비 식별자 (알림 본문) |
+| `eqpId` | 장비 식별자 — **알림 `hostname` 필드** (Akka가 hostname을 eqpId로 취급: 수신자 조회·분임조·`@Hostname`) |
 | `process` | `get_distinct_processes()` — 파티셔닝 키 |
-| `eqpModel` | scope 매핑 (resolve_profile) |
-| `localpc`, `ipAddr`, `line`, `category` | 알림 본문 |
+| `eqpModel` | scope 매핑 (resolve_profile) + 알림 `model` |
+| `ipAddr`(→`ip`), `line`, `category` | 알림 본문 |
+| `localpc` | (구) hostname 소스였으나 **더 이상 알림에 사용 안 함** — projection엔 잔존(무해) |
 | `onoff`, `webmanagerUse` | **활성 필터** (둘 다 1) |
 
 ### 9.2 활성 필터

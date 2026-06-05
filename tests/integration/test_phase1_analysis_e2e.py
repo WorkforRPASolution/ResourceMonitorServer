@@ -200,6 +200,7 @@ async def test_threshold_breach_sends_email(real_es, phase1_db, real_redis, ns, 
     assert len(result.breaches) == 1
     assert result.breaches[0].eqp_id == eqp_id
     (payload,) = mock_email_server["received"]
+    assert payload["hostname"] == eqp_id  # hostname=eqpId (localpc 아님)
     assert payload["code"] == "RESOURCE_MONITOR"
     assert payload["subcode"] == "CPU_WARNING"
     assert payload["app"] == "ARS"
@@ -327,7 +328,7 @@ async def test_multi_equipment_partial(real_es, phase1_db, real_redis, ns, mock_
 
     assert {b.eqp_id for b in result.breaches} == breached
     received = mock_email_server["received"]
-    assert {p["hostname"] for p in received} == {f"PC-{e}" for e in breached}
+    assert {p["hostname"] for p in received} == breached  # hostname=eqpId
 
 
 # ======================================================================
@@ -360,7 +361,7 @@ async def test_model_overlay_reaches_alerts(real_es, phase1_db, real_redis, ns, 
     crit = [p for p in received if p["variables"]["Severity"] == "CRITICAL"]
     # the overlay's CRITICAL rule DID reach alerts, and only for the overlay eqp
     assert len(crit) == 1
-    assert crit[0]["hostname"] == f"PC-{ov_eqp}"
+    assert crit[0]["hostname"] == ov_eqp  # hostname=eqpId
     # base eqp never escalates to CRITICAL
     by_sev = {(b.eqp_id, b.severity) for b in result.breaches}
     assert (ov_eqp, "CRITICAL") in by_sev
