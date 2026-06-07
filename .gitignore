@@ -35,6 +35,7 @@ htmlcov/
 .hypothesis/
 coverage.xml
 *.cover
+.playwright-mcp/
 
 # IDE
 .vscode/
