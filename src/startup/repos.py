@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import structlog
 from pymongo import ASCENDING
+from pymongo.errors import OperationFailure
 
 from src.config.constants import COLL_EQP_INFO, COLL_PROFILE
 from src.config.settings import AppSettings
@@ -62,8 +63,24 @@ async def init_repos(
         # seeds a default profile.
         existing = await db.list_collection_names()
         if COLL_PROFILE not in existing:
-            await db.create_collection(COLL_PROFILE)
-            logger.info("profile_collection_created", collection=COLL_PROFILE)
+            # NOTE: list_collection_names() + create_collection() is not atomic.
+            # On concurrent multi-instance boot, two pods can both see the
+            # collection absent and both call create_collection; the loser
+            # gets OperationFailure NamespaceExists (code 48). That means the
+            # collection now exists — idempotent success (SCHEMA §7), not a
+            # startup failure. Any other OperationFailure is a real problem
+            # (auth, disk, …) and must propagate.
+            try:
+                await db.create_collection(COLL_PROFILE)
+                logger.info("profile_collection_created", collection=COLL_PROFILE)
+            except OperationFailure as exc:
+                if exc.code != 48:  # 48 = NamespaceExists
+                    raise
+                logger.info(
+                    "profile_collection_create_race_ignored",
+                    collection=COLL_PROFILE,
+                    reason="concurrent instance created it (NamespaceExists)",
+                )
         await db[COLL_PROFILE].create_index(
             [
                 ("scope.process", ASCENDING),

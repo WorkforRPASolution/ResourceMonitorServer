@@ -234,6 +234,44 @@ class TestInitRepos:
         profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
         profile_coll.create_index.assert_awaited_once()
 
+    async def test_init_repos_tolerates_concurrent_create_race(self, settings):
+        """★ Regression guard for the multi-instance boot race:
+        two instances starting together can BOTH see the collection absent
+        (list_collection_names) and BOTH call create_collection; the loser
+        gets OperationFailure NamespaceExists (code 48). init_repos must treat
+        that as idempotent success (SCHEMA §7 'init_repos가 멱등 생성'), not
+        crash startup. Without this, one pod's lifespan fails on concurrent
+        deploy (tests/e2e/test_multi_instance leader/failover regression)."""
+        from pymongo.errors import OperationFailure
+
+        ctx = self._make_infra()
+        # stale view: collection appears absent at check time
+        ctx.mongo.db.list_collection_names = AsyncMock(return_value=[])
+        # but another instance created it between check and create
+        ctx.mongo.db.create_collection = AsyncMock(
+            side_effect=OperationFailure("Collection already exists", 48)
+        )
+
+        # Must not raise — and must still ensure the unique index afterward.
+        repos = await init_repos(ctx, settings)
+        assert repos.profile_repo is not None
+        profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
+        profile_coll.create_index.assert_awaited_once()
+
+    async def test_init_repos_reraises_non_namespace_create_failures(self, settings):
+        """Only the NamespaceExists race (code 48) is swallowed; any other
+        OperationFailure (auth, disk, etc.) must still propagate so real
+        startup problems are not masked."""
+        from pymongo.errors import OperationFailure
+
+        ctx = self._make_infra()
+        ctx.mongo.db.list_collection_names = AsyncMock(return_value=[])
+        ctx.mongo.db.create_collection = AsyncMock(
+            side_effect=OperationFailure("not authorized", 13)
+        )
+        with pytest.raises(OperationFailure):
+            await init_repos(ctx, settings)
+
     async def test_init_repos_raises_if_mongo_not_connected(self, settings):
         ctx = InfraContext()  # mongo is None
         with pytest.raises(RuntimeError, match="connected MongoClient"):
