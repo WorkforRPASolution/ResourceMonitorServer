@@ -643,50 +643,53 @@ function buildProfile(){
 
 /* SCHEMA §5 검증 규칙 (설비 엔지니어용 평문 메시지) */
 function validate(p){
-  const errors=[], warnings=[];
+  // err(code,msg): UI용 평문 메시지(errors)와 머신 판독용 규칙 코드(codes)를 함께 수집.
+  // codes는 window.__rmp.validateCase가 3-way 대조에 사용 (SCHEMA §5.x).
+  const errors=[], warnings=[], codes=[];
+  const err=(code,msg)=>{ errors.push(msg); codes.push(code); };
   const m = p.measures[0];
 
   // §5.1 한 measure 내 type 유일
   const types = m.facts.map(f=>f.type);
   const dups = [...new Set(types.filter((t,i)=>types.indexOf(t)!==i))];
   if(dups.length)
-    errors.push(`측정 항목 '${m.id}'에 같은 종류(${dups.join(", ")})가 중복되었습니다. 한 측정 항목에는 같은 종류를 한 번만 넣을 수 있어요.`);
+    err("§5.1", `측정 항목 '${m.id}'에 같은 종류(${dups.join(", ")})가 중복되었습니다. 한 측정 항목에는 같은 종류를 한 번만 넣을 수 있어요.`);
 
   // §5.1 measure id 필수
-  if(!m.id) errors.push("측정 항목 이름(id)을 입력하세요.");
-  if(!m.metric) errors.push("세부 항목(metric)을 입력하세요.");
+  if(!m.id) err("§5.1", "측정 항목 이름(id)을 입력하세요.");
+  if(!m.metric) err("§5.1", "세부 항목(metric)을 입력하세요.");
 
   for(const r of p.rules){
-    if(!r.id) errors.push("규칙 이름(id)을 입력하세요.");
+    if(!r.id) err("§5.1", "규칙 이름(id)을 입력하세요.");
     for(const w of r.when){
       const dot = (w.fact||"").split(".");
       const mid = dot[0], type = dot.slice(1).join(".");
       // §5.5 M 존재
       if(mid !== m.id){
-        errors.push(`규칙 '${r.id}'이 존재하지 않는 측정 항목 '${mid||"(빈값)"}'을 참조합니다.`);
+        err("§5.5", `규칙 '${r.id}'이 존재하지 않는 측정 항목 '${mid||"(빈값)"}'을 참조합니다.`);
         continue;
       }
       // §5.5 T가 measure에 선언됨
       if(!types.includes(type)){
-        errors.push(`규칙 '${r.id}'이 측정 항목 '${mid}'에 없는 값 '${type||"(빈값)"}'을 참조합니다. 2단계에서 먼저 그 값을 추가하세요.`);
+        err("§5.5", `규칙 '${r.id}'이 측정 항목 '${mid}'에 없는 값 '${type||"(빈값)"}'을 참조합니다. 2단계에서 먼저 그 값을 추가하세요.`);
         continue;
       }
       // §5.5 op 허용 (type↔op 적합성)
       const allowed = (FACT_TYPES[type]||{}).ops||[];
       if(w.op && !allowed.includes(w.op)){
-        errors.push(`'${mid}.${type}'에는 비교 연산자 '${w.op}'를 쓸 수 없습니다. 가능한 연산자: ${allowed.join(", ")}.`);
+        err("§5.5", `'${mid}.${type}'에는 비교 연산자 '${w.op}'를 쓸 수 없습니다. 가능한 연산자: ${allowed.join(", ")}.`);
       }
     }
     // §5.6 interval ≤ window
     if(r.interval_minutes > m.window_minutes){
-      errors.push(`규칙 '${r.id}'의 평가 주기(${r.interval_minutes}분)가 관찰 구간(${m.window_minutes}분)보다 깁니다. 사건을 놓칠 수 있으니 주기를 구간 이하로 줄이세요.`);
+      err("§5.6", `규칙 '${r.id}'의 평가 주기(${r.interval_minutes}분)가 관찰 구간(${m.window_minutes}분)보다 깁니다. 사건을 놓칠 수 있으니 주기를 구간 이하로 줄이세요.`);
     }
     // §5.7 notify 존재
     if(r.notify && !p.notify[r.notify]){
-      errors.push(`규칙 '${r.id}'이 알림 채널 '${r.notify}'을 참조하지만 4단계에 정의되지 않았습니다.`);
+      err("§5.7", `규칙 '${r.id}'이 알림 채널 '${r.notify}'을 참조하지만 4단계에 정의되지 않았습니다.`);
     }
   }
-  return {errors, warnings};
+  return {errors, warnings, codes};
 }
 
 function updateOutput(){
@@ -748,6 +751,19 @@ function fallbackCopy(text, done){
   try{ document.execCommand('copy'); }catch(e){}
   document.body.removeChild(ta); done();
 }
+
+// ── 테스트 훅(UI 무관) — SCHEMA §5 검증 3-way 대조 러너가 사용 ──────────────
+// 임의 프로파일 JSON을 받아 검증 결과를 머신 판독 형태로 반환.
+// 주의: playground는 measures[0](단일 measure)만 보고, last/p50/p90/p99·quantifier
+// count_min·spike param 누락은 검증하지 않음 → 그런 케이스는 러너에서 GAP으로 분류.
+window.__rmp = {
+  validateCase(profile){
+    const { errors, codes } = validate(profile);
+    return { valid: errors.length === 0, violations: [...new Set(codes)] };
+  },
+  FACT_TYPES,
+  ALL_OPS
+};
 
 document.addEventListener('DOMContentLoaded', init);
 </script>
