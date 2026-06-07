@@ -9,7 +9,7 @@
 |------|------|------|
 | OS | Windows 10/11 x64 | arm64 Windows 미검증 |
 | Python | **3.11 이상** | 3.10 이하 불가 (`pyproject.toml` 제약) |
-| 네트워크 | ES/MongoDB 포트 접근 가능 | 방화벽/VPN 확인 |
+| 네트워크 | ES/MongoDB/**Redis** 포트 접근 가능 | 방화벽/VPN 확인 (Redis 도 부팅에 필요) |
 | Git | 선택 | 없으면 zip 복사 |
 
 > **Python 3.10 이하가 설치되어 있어도 3.11 과 공존 가능합니다.** `py -3.11` 런처로 명시 호출하면 됩니다.
@@ -106,6 +106,10 @@ MONITOR_ES_HOSTS=http://<es-host>:9200
 # ES 인증이 필요하면
 MONITOR_ES_USERNAME=<username>
 MONITOR_ES_PASSWORD=<password>
+# ⚠️ Redis 는 debug 모드에서도 부팅 시 connect_with_retry 로 연결한다.
+#    기본값(redis:6379)으론 startup 이 실패하므로 반드시 실제 서버로 지정할 것.
+#    (debug 에서 로컬 캐시로 우회되는 건 cooldown '쓰기'뿐, 연결 자체는 필수)
+MONITOR_REDIS_URL=redis://<redis-host>:6379/5
 
 # ─── Debug Read-Only 모드 ON ───
 MONITOR_DEBUG_READ_ONLY=true
@@ -117,10 +121,13 @@ MONITOR_DEBUG_PROCESSES=ETCH,CVD
 MONITOR_LOG_FORMAT=console
 MONITOR_LOG_LEVEL=INFO
 
-# ─── 아래는 debug 모드에서 무시되므로 기본값 유지 ───
-# MONITOR_ZK_HOSTS=...       ← 연결 안 함
-# MONITOR_REDIS_URL=...      ← local TTLCache 사용
-# MONITOR_EMAIL_API_URL=...  ← 발송 안 함
+# ─── ZooKeeper: debug 에선 연결 안 함 (기본값 유지 가능) ───
+# MONITOR_ZK_HOSTS=...
+
+# ─── Akka Email: 메일 발송은 suppress(로그만) 되어 부팅엔 영향 없음.
+#     단 /healthz/ready 의 email_api 체크가 이 URL 로 HEAD 를 보낸다 —
+#     닿으면 ready=200, 안 닿으면 email_api:false + 503 (분석은 정상, 6단계 참고).
+# MONITOR_EMAIL_API_URL=http://<akka-host>:8080/EmailNotify
 ```
 
 ### Debug Read-Only 모드에서 동작 요약
@@ -130,8 +137,8 @@ MONITOR_LOG_LEVEL=INFO
 | MongoDB | **읽기만** (index 생성, seed 스킵) |
 | Elasticsearch | **읽기만** (정상 모드와 동일) |
 | Zookeeper | **연결 안 함** (리더 선출/파티션 전부 스킵) |
-| Redis | **로컬 캐시만** (Redis 서버 불필요) |
-| Email API | **로그만** (실제 발송 X) |
+| Redis | **연결 필수** (부팅 시 `connect_with_retry`) — cooldown *쓰기*만 로컬 TTLCache 로 우회 |
+| Email API | **발송 suppress**(로그만) — 단 `/healthz/ready` 의 email_api 체크는 이 URL 로 HEAD |
 | Scheduler | **정상 기동** (분석 흐름 관찰 가능) |
 
 ---
@@ -172,34 +179,55 @@ curl http://localhost:8080/admin/status
 
 ### `/healthz/ready` 응답 해석
 
-**성공 (인프라 연결 OK):**
+> 각 인프라 체크 값은 **boolean `true`/`false`** 입니다(`"ok"` 문자열 아님).
+> `zookeeper` 만 debug 모드에서 `"skipped_debug"` 문자열입니다.
+> HTTP 상태코드: ready 면 **200**, not_ready 면 **503**.
+
+**성공 (인프라 연결 OK) — HTTP 200:**
 ```json
 {
-  "status": "healthy",
+  "status": "ready",
   "debug_read_only": true,
   "checks": {
-    "elasticsearch": "ok",
-    "mongodb": "ok",
-    "redis": "ok",
-    "email_api": "ok",
+    "elasticsearch": true,
+    "mongodb": true,
+    "redis": true,
+    "email_api": true,
     "zookeeper": "skipped_debug"
-  }
+  },
+  "scheduler_running": true,
+  "is_leader": null,
+  "redistribute_unhealthy": false,
+  "version": "0.1.0"
 }
 ```
 
-**실패 예시 (ES 연결 불가):**
+**실패 예시 (ES 연결 불가) — HTTP 503:**
 ```json
 {
-  "status": "unhealthy",
+  "status": "not_ready",
+  "debug_read_only": true,
   "checks": {
-    "elasticsearch": "timeout after 2s",
-    "mongodb": "ok",
-    ...
-  }
+    "elasticsearch": false,
+    "mongodb": true,
+    "redis": true,
+    "email_api": true,
+    "zookeeper": "skipped_debug"
+  },
+  "scheduler_running": true,
+  "is_leader": null,
+  "redistribute_unhealthy": false,
+  "version": "0.1.0"
 }
 ```
 
-→ 실패한 항목의 호스트/포트/방화벽 확인.
+→ `false` 인 항목의 호스트/포트/방화벽 확인.
+
+> **⚠️ debug 모드라도 `/healthz/ready` 는 `email_api` 를 검사한다.**
+> Akka(`MONITOR_EMAIL_API_URL`) 에 닿지 않으면 `email_api: false` + **503** 이 된다.
+> 하지만 이때도 **ES 조회·분석·메일 suppress 는 정상 동작**한다(부팅엔 영향 없음).
+> Akka 를 띄울 수 없다면 ready 503 은 무시하고, 대신 **앱 로그의 `debug_would_send_email`**
+> 줄과 **`/admin/status`** 로 분석 흐름을 검증하면 된다.
 
 ### `curl` 이 없는 경우
 
@@ -231,10 +259,7 @@ ERROR: Package 'resource-monitor-server' requires a different Python: 3.10.9 not
 ```
 → `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 실행 후 재시도.
 
-### ES 연결 타임아웃
-```
-elasticsearch: "timeout after 2s"
-```
+### ES 연결 실패 (`/healthz/ready` 의 checks 에서 `"elasticsearch": false`)
 → 네트워크 확인:
 ```powershell
 Test-NetConnection -ComputerName <es-host> -Port 9200
