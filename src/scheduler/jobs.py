@@ -115,20 +115,21 @@ class AnalysisScheduler:
         engine = self._get_engine()
 
         for process in processes:
-            # The process-level effective profile drives the SET of evaluation
-            # intervals (interval override is allowed only down to the process
-            # level; eqp/model overlays may change thresholds but not cadence).
-            # The engine itself re-resolves the effective profile per equipment
-            # at run time, so per-eqp overrides still apply.
-            profile = await self._deps.profile_repo.resolve_profile(
-                process, "*", "*"
+            # Job cadence = the union of rule intervals across EVERY scope doc
+            # that can affect this process (process-specific + model/eqp overlays
+            # + globals). We must NOT derive it from resolve_profile(process,*,*),
+            # which sees only the process-level/global ancestors — a profile
+            # scoped to a specific model/equipment would then never be scheduled.
+            # The engine re-resolves the effective profile per equipment at run
+            # time, so thresholds/overrides still apply; here we only need cadence.
+            intervals = await self._deps.profile_repo.get_scheduling_intervals(
+                process
             )
-            if profile is None:
+            if not intervals:
                 logger.warning(
-                    "reload_no_profile_for_process", process=process
+                    "reload_no_intervals_for_process", process=process
                 )
                 continue
-            intervals = sorted({r.interval_minutes for r in profile.rules})
             for interval in intervals:
                 job_id = f"analysis-{process}-{interval}m"
                 self._scheduler.add_job(

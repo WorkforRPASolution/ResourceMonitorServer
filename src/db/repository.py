@@ -239,6 +239,38 @@ class ProfileRepository:
         self._resolve_cache[cache_key] = effective
         return effective
 
+    async def get_scheduling_intervals(self, process: str) -> list[int]:
+        """Distinct rule intervals across EVERY scope doc that can affect this
+        process (process-specific + globals), sorted ascending.
+
+        ``reload()`` uses this to register one ``(process, interval)`` job per
+        distinct interval. Unlike ``resolve_profile(process, "*", "*")`` — which
+        folds only the ``("*","*","*")`` and ``(process,"*","*")`` ancestors —
+        this includes model/eqp-scoped overlays, so a profile that targets only
+        a specific equipment is still scheduled. The engine re-resolves the
+        per-equipment effective profile at run time, so thresholds/overrides
+        still apply correctly; this method only decides the job cadence.
+
+        Only ``enabled: true`` docs contribute (a fully-disabled profile gets
+        no job). The runtime engine still re-checks ``profile.enabled`` per
+        equipment.
+        """
+        try:
+            cursor = self._collection.find(
+                {"scope.process": {"$in": [process, "*"]}, "enabled": True},
+                {"_id": 0, "rules.interval_minutes": 1},
+            )
+            docs = await cursor.to_list(None)
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(f"get_scheduling_intervals: {e}") from e
+        intervals: set[int] = set()
+        for doc in docs:
+            for rule in doc.get("rules", []):
+                iv = rule.get("interval_minutes")
+                if isinstance(iv, int):
+                    intervals.add(iv)
+        return sorted(intervals)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

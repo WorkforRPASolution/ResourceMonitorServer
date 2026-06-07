@@ -167,6 +167,61 @@ class TestCascadeFold:
         assert [r.id for r in eff.rules] == ["r"]  # returned despite invalid ref
 
 
+class TestGetSchedulingIntervals:
+    """reload()의 잡 cadence 출처. resolve_profile(p,*,*)와 달리 model/eqp 단독
+    overlay까지 포함해 잡이 등록되도록 보장한다."""
+
+    async def test_filter_includes_globals_and_only_enabled(self, mock_collection):
+        mock_collection.find = MagicMock(return_value=_cursor([]))
+        repo = ProfileRepository(mock_collection)
+        await repo.get_scheduling_intervals("CVD")
+        # 글로벌(*)까지 $in 으로 포함, enabled=true 만 대상
+        assert mock_collection.find.call_args.args[0] == {
+            "scope.process": {"$in": ["CVD", "*"]},
+            "enabled": True,
+        }
+
+    async def test_unions_intervals_across_scopes(self, mock_collection):
+        glob = _make_profile(
+            process="*", eqp_model="*", eqp_id="*",
+            rules=[
+                Rule(id="g5", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=80)]),
+                Rule(id="g10", interval_minutes=10, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=70)]),
+            ],
+        )
+        eqp = _make_profile(
+            process="CVD", eqp_model="M", eqp_id="E1",
+            rules=[
+                Rule(id="e5", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=85)]),
+                Rule(id="e15", interval_minutes=15, severity="CRITICAL",
+                     when=[Condition(fact="cpu.max", op=">=", value=95)]),
+            ],
+        )
+        mock_collection.find = MagicMock(return_value=_cursor([_doc(glob), _doc(eqp)]))
+        repo = ProfileRepository(mock_collection)
+        assert await repo.get_scheduling_intervals("CVD") == [5, 10, 15]
+
+    async def test_eqp_only_doc_yields_interval(self, mock_collection):
+        # process 레벨 문서가 전혀 없고 eqp 단독 문서만 있어도 interval이 나와야 한다
+        # (resolve_profile("CVD","*","*")는 None이던 회귀 케이스).
+        eqp = _make_profile(
+            process="CVD", eqp_model="M", eqp_id="E1",
+            rules=[Rule(id="e5", interval_minutes=5, severity="WARNING",
+                        when=[Condition(fact="cpu.max", op=">=", value=85)])],
+        )
+        mock_collection.find = MagicMock(return_value=_cursor([_doc(eqp)]))
+        repo = ProfileRepository(mock_collection)
+        assert await repo.get_scheduling_intervals("CVD") == [5]
+
+    async def test_no_docs_returns_empty(self, mock_collection):
+        mock_collection.find = MagicMock(return_value=_cursor([]))
+        repo = ProfileRepository(mock_collection)
+        assert await repo.get_scheduling_intervals("NOPE") == []
+
+
 class TestUpsert:
     async def test_uses_exact_filter_and_clears_cache(self, mock_collection):
         repo = ProfileRepository(mock_collection)
@@ -320,6 +375,13 @@ class TestMongoUnavailableTranslation:
             to_list=AsyncMock(side_effect=driver_exc)))
         with pytest.raises(MongoUnavailableError):
             await repo.resolve_profile("CVD", "ABC", "EQP01")
+
+    async def test_get_scheduling_intervals_translates(self, mock_collection, driver_exc):
+        repo = ProfileRepository(mock_collection)
+        mock_collection.find = MagicMock(return_value=MagicMock(
+            to_list=AsyncMock(side_effect=driver_exc)))
+        with pytest.raises(MongoUnavailableError):
+            await repo.get_scheduling_intervals("CVD")
 
     async def test_replace_with_version_translates(self, mock_collection, driver_exc):
         repo = ProfileRepository(mock_collection)

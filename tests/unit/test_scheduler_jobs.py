@@ -255,10 +255,16 @@ class TestSchedulerReload:
             ],
             notify={"default": NotifyChannel(cooldown_minutes=30)},
         )
+        # reload() derives job cadence from get_scheduling_intervals (the union
+        # of intervals across all scope docs for the process), NOT from the
+        # process-level resolve_profile. resolve_profile stays for the engine's
+        # per-equipment resolution at run time.
+        intervals = sorted({r.interval_minutes for r in profile.rules})
         deps = SimpleNamespace(
             es=MagicMock(),
             profile_repo=MagicMock(
-                resolve_profile=AsyncMock(return_value=profile)
+                resolve_profile=AsyncMock(return_value=profile),
+                get_scheduling_intervals=AsyncMock(return_value=intervals),
             ),
             eqp_info_repo=MagicMock(),
             zk_lock=MagicMock(),
@@ -300,15 +306,31 @@ class TestSchedulerReload:
         assert "analysis-ETCH-5m" in job_ids
         await sched.shutdown(timeout=1.0)
 
-    async def test_reload_skips_process_with_no_profile(self):
+    async def test_reload_skips_process_with_no_intervals(self):
         deps = self._make_deps_with_profile()
-        deps.profile_repo.resolve_profile = AsyncMock(return_value=None)
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[])
         sched = AnalysisScheduler(
             AppSettings(scheduler_misfire_grace_time=60), deps
         )
         await sched.start()
         await sched.reload(["CVD"])
         assert len(sched._scheduler.get_jobs()) == 0
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reload_schedules_eqp_only_process(self):
+        # Regression: a process whose ONLY profile doc is eqp/model-scoped must
+        # still get a job. reload trusts get_scheduling_intervals (which folds in
+        # overlays), so a single interval from an eqp-only doc registers a job —
+        # whereas resolve_profile(process,"*","*") would have returned None.
+        deps = self._make_deps_with_profile()
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[5])
+        sched = AnalysisScheduler(
+            AppSettings(scheduler_misfire_grace_time=60), deps
+        )
+        await sched.start()
+        await sched.reload(["CVD"])
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert job_ids == {"analysis-CVD-5m"}
         await sched.shutdown(timeout=1.0)
 
     async def test_reload_uses_debug_processes_when_none_passed(self):

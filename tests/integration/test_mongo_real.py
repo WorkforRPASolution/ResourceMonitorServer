@@ -167,6 +167,51 @@ async def test_resolve_profile_cascade_fold(fresh_mongo_db):
     assert [m.id for m in effective.measures] == ["cpu"]  # inherited from global
 
 
+async def test_get_scheduling_intervals_eqp_only_doc(fresh_mongo_db):
+    """★ 회귀 가드(reload 버그): process 레벨/글로벌 문서가 전혀 없고 eqp 단독
+    문서만 있을 때, resolve_profile(p,*,*)는 None이라 예전 reload는 잡을 0개
+    등록했다. get_scheduling_intervals는 이 문서의 interval을 잡아내야 한다."""
+    coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
+    repo = ProfileRepository(coll)
+    await repo.create(_v2_profile(
+        Scope(process="CVD", eqp_model="M", eqp_id="E1"),
+        rules=[Rule(id="e5", interval_minutes=5, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=85)])],
+    ))
+
+    # 예전 cadence 경로: eqp 단독은 ancestor triple 매칭 안 됨 → None
+    assert await repo.resolve_profile("CVD", "*", "*") is None
+    # 새 경로: eqp 단독 문서의 interval이 스케줄 대상으로 잡힘
+    assert await repo.get_scheduling_intervals("CVD") == [5]
+
+
+async def test_get_scheduling_intervals_unions_and_excludes_disabled(fresh_mongo_db):
+    """글로벌(*) + eqp 단독 overlay interval 합집합, disabled 문서는 제외."""
+    coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
+    repo = ProfileRepository(coll)
+    # 글로벌(*): interval 10 — 모든 process에 fold되므로 포함돼야 함
+    await repo.create(_v2_profile(
+        Scope(process="*"),
+        rules=[Rule(id="g10", interval_minutes=10, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=80)])],
+    ))
+    # eqp 단독: interval 5
+    await repo.create(_v2_profile(
+        Scope(process="CVD", eqp_model="M", eqp_id="E1"),
+        rules=[Rule(id="e5", interval_minutes=5, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=85)])],
+    ))
+    # disabled eqp 단독: interval 30 → 제외되어야 함
+    await repo.create(MonitorProfile(
+        scope=Scope(process="CVD", eqp_model="M", eqp_id="E2"),
+        enabled=False,
+        rules=[Rule(id="d30", interval_minutes=30, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=85)])],
+    ))
+
+    assert await repo.get_scheduling_intervals("CVD") == [5, 10]
+
+
 async def test_optimistic_lock_conflict(fresh_mongo_db):
     """version mismatch → ProfileVersionConflictError; 정상 버전 → bump."""
     coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
