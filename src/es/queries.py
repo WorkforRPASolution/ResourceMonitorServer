@@ -5,8 +5,12 @@ The real production documents are **EARS rows** (PRD §7.2): one document per
 ``EARS_VALUE`` / ``EARS_EQPID`` / ``EARS_PROCNAME`` / ``EARS_TIMESTAMP``. The
 metric identity is therefore a *filter* (term on EARS_CATEGORY + EARS_METRIC),
 not a top-level numeric field; every fact aggregates the single ``EARS_VALUE``
-column. The EARS_* string fields are mapped as ``keyword`` (no text+.keyword
-subfield), so term filters and terms aggregations target the bare field name.
+column. The EARS_* string fields are mapped as ``text`` + a ``.keyword``
+subfield (ES default dynamic mapping — verified against production), so term
+filters and terms aggregations MUST target ``<field>.keyword``. The suffix is
+configurable via ``settings.es_keyword_suffix`` (default ``".keyword"``; set
+``""`` for a cluster that maps these as bare ``keyword``). ``EARS_VALUE``
+(numeric) and ``EARS_TIMESTAMP`` (date) are queried by bare name.
 
 Aggregation nesting (outer→inner):
     by_eqp (terms EARS_EQPID)
@@ -25,13 +29,28 @@ from typing import Any
 from src.analyzer import fact_catalog as fc
 from src.config.settings import AppSettings
 
-# EARS_* field roles (PRD §7.2). All keyword fields are queried by bare name.
+# EARS_* field roles (PRD §7.2). TS_FIELD (date) and VALUE_FIELD (numeric) are
+# queried by bare name; the four string fields below take ``es_keyword_suffix``
+# (``.keyword``) for term/terms filters and terms aggregations — see keyword_field.
 TS_FIELD = "EARS_TIMESTAMP"
 VALUE_FIELD = "EARS_VALUE"
 CATEGORY_FIELD = "EARS_CATEGORY"
 METRIC_FIELD = "EARS_METRIC"
 PROC_FIELD = "EARS_PROCNAME"
 EQP_FIELD = "EARS_EQPID"
+
+
+def keyword_field(base: str, settings: AppSettings) -> str:
+    """Append the configured keyword suffix to a string field used in a term/
+    terms filter or terms aggregation.
+
+    EARS_* string fields are mapped as ``text`` + ``.keyword`` in production, so
+    aggregating/filtering on the bare name fails (text fielddata) or silently
+    mismatches (analyzer tokenisation). ``settings.es_keyword_suffix`` defaults
+    to ``".keyword"``; ``""`` reverts to the bare field for keyword-mapped
+    clusters. Do NOT use this for ``EARS_VALUE``/``EARS_TIMESTAMP``.
+    """
+    return base + settings.es_keyword_suffix
 
 
 def build_fact_sub_aggs(facts: Iterable[Any]) -> dict[str, dict]:
@@ -81,6 +100,13 @@ class QueryBuilder:
 
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
+        # Keyword-targeted field names for term/terms filters and terms aggs
+        # (EARS_* strings are text+.keyword in prod). EARS_VALUE/EARS_TIMESTAMP
+        # stay bare.
+        self._cat_field = keyword_field(CATEGORY_FIELD, settings)
+        self._metric_field = keyword_field(METRIC_FIELD, settings)
+        self._proc_field = keyword_field(PROC_FIELD, settings)
+        self._eqp_field = keyword_field(EQP_FIELD, settings)
 
     # ------------------------------------------------------------------
     # Index resolution
@@ -129,27 +155,6 @@ class QueryBuilder:
             }
         }
 
-    def build_metric_names_query(
-        self, now: datetime, window_minutes: int, category: str, proc: str = "@system"
-    ) -> dict:
-        """``size=0`` query enumerating the distinct ``EARS_METRIC`` values for a
-        category (used to resolve wildcard metric patterns to instances)."""
-        filters: list[dict] = [
-            self.build_time_range_filter(now, window_minutes),
-            {"term": {CATEGORY_FIELD: category}},
-        ]
-        if proc != "*":
-            filters.append({"term": {PROC_FIELD: proc}})
-        return {
-            "size": 0,
-            "query": {"bool": {"filter": filters}},
-            "aggs": {
-                "metrics": {
-                    "terms": {"field": METRIC_FIELD, "size": self._METRIC_TERMS_SIZE}
-                }
-            },
-        }
-
     # ------------------------------------------------------------------
     # Phase 1: metric aggregation query (EARS_* rows)
     # ------------------------------------------------------------------
@@ -181,35 +186,35 @@ class QueryBuilder:
         if expand_instance:
             inner = {
                 "by_metric": {
-                    "terms": {"field": METRIC_FIELD, "size": self._METRIC_TERMS_SIZE},
+                    "terms": {"field": self._metric_field, "size": self._METRIC_TERMS_SIZE},
                     "aggs": inner,
                 }
             }
         if proc == "*":
             inner = {
                 "by_proc": {
-                    "terms": {"field": PROC_FIELD, "size": self._PROC_TERMS_SIZE},
+                    "terms": {"field": self._proc_field, "size": self._PROC_TERMS_SIZE},
                     "aggs": inner,
                 }
             }
 
         filters: list[dict] = [
             self.build_time_range_filter(now, window_minutes),
-            {"term": {CATEGORY_FIELD: category}},
+            {"term": {self._cat_field: category}},
         ]
         if metrics:
-            filters.append({"terms": {METRIC_FIELD: metrics}})
+            filters.append({"terms": {self._metric_field: metrics}})
         if proc != "*":
-            filters.append({"term": {PROC_FIELD: proc}})
+            filters.append({"term": {self._proc_field: proc}})
         if eqp_ids:
-            filters.append({"terms": {EQP_FIELD: eqp_ids}})
+            filters.append({"terms": {self._eqp_field: eqp_ids}})
 
         return {
             "size": 0,
             "query": {"bool": {"filter": filters}},
             "aggs": {
                 "by_eqp": {
-                    "terms": {"field": EQP_FIELD, "size": self._TERMS_AGG_SIZE},
+                    "terms": {"field": self._eqp_field, "size": self._TERMS_AGG_SIZE},
                     "aggs": inner,
                 }
             },

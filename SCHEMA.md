@@ -341,12 +341,12 @@ db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
   |------|------|------|
   | `EARS_TIMESTAMP` | date | time range 필터 (`build_time_range_filter`) |
   | `EARS_VALUE` | double | **유일한 집계 대상** (max/min/avg/percentiles/range…) |
-  | `EARS_CATEGORY` | keyword | category term 필터 (cpu/memory/disk…) |
-  | `EARS_METRIC` | keyword | metric term 필터 / 와일드카드 인스턴스 발견(terms) |
-  | `EARS_PROCNAME` | keyword | proc 필터(`measure.proc`) 또는 proc 그룹(`proc=="*"`) |
-  | `EARS_EQPID` | keyword | 장비 group_by (`terms`, size=30000) |
+  | `EARS_CATEGORY` | text + `.keyword` | category term 필터 (cpu/memory/disk…) |
+  | `EARS_METRIC` | text + `.keyword` | metric term 필터 / 와일드카드 인스턴스 발견(terms) |
+  | `EARS_PROCNAME` | text + `.keyword` | proc 필터(`measure.proc`) 또는 proc 그룹(`proc=="*"`) |
+  | `EARS_EQPID` | text + `.keyword` | 장비 group_by (`terms`, size=30000) |
 
-- **모든 문자열 필드는 bare `keyword`** (text+`.keyword` 서브필드 없음) → term/terms는 필드명을 그대로 사용(`.keyword` 접미사 **금지**).
+- **모든 문자열 필드는 `text` + `.keyword` 서브필드** (ES 기본 동적 매핑, **운영 확인**) → term/terms 필터와 terms aggregation은 **반드시 `<field>.keyword`** 를 써야 한다(bare text로는 집계 400 실패·필터 토큰 mismatch). suffix는 `settings.es_keyword_suffix`(기본 `.keyword`)로 주입하며, bare keyword 클러스터면 `""`로 override. `EARS_VALUE`(numeric)·`EARS_TIMESTAMP`(date)는 bare.
 - 집계 중첩(외→내): `by_eqp(EARS_EQPID)` → *(proc=="\*"면)* `by_proc(EARS_PROCNAME)` → *(expand=="instance"면)* `by_metric(EARS_METRIC)` → fact별 leaf sub-agg(키 = fact type명). `src/analyzer/es_parser.py`가 같은 중첩을 파싱 — sub-agg 키가 쿼리↔파서 계약.
 
 ### 8.2 해소된 가정 + 남은 의존
@@ -412,7 +412,7 @@ EqpInfoRepository._ACTIVE_FILTER = {"onoff": 1, "webmanagerUse": 1}
 | P4 | 한 measure 같은 type 중복 | 금지(참조 모호). 다른 임계/창 필요하면 measure 분리 또는 rule 분리 |
 | P5 | 임계가 measure·rule 두 곳 | `spike_count.over`=사건 경계(measure), `rule.value`=경보 기준(rule). 의도된 계층 |
 | P6 | 경보 방향을 max로만 | 낮을때는 `min`+`<=`, 범위이탈은 두 조건 OR. type↔op 적합성 검증됨 |
-| P7 | category 필터 누락 | ES 쿼리에 `EARS_CATEGORY` term 필수(bare keyword, `.keyword` 아님; cpu/mem `total_used_pct` 혼입 방지 — [§8.1](#81-확정된-사실)) |
+| P7 | category 필터 누락 | ES 쿼리에 `EARS_CATEGORY.keyword` term 필수(문자열 필드는 text+`.keyword`, `settings.es_keyword_suffix`; cpu/mem `total_used_pct` 혼입 방지 — [§8.1](#81-확정된-사실)) |
 | P8 | 활성 필터 누락 | `EqpInfoRepository`만 사용 |
 | P9 | 특정 장비 override 시 전역 통째 복사 | **금지**. overlay엔 바꿀 measure/rule만(나머지 상속, [§6](#6-스코프-해석--계층-상속-cascade)). 전체 복사는 드리프트 유발 |
 

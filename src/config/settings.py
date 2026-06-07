@@ -32,6 +32,11 @@ class AppSettings(BaseSettings):
     es_use_ssl: bool = False
     es_request_timeout: int = 30
     es_max_retries: int = 3
+    # EARS_* 문자열 필드는 운영에서 text + `.keyword` 서브필드로 매핑됨 → term/terms
+    # 필터와 terms aggregation은 `.keyword`를 타야 한다. 혹시 bare keyword로
+    # 매핑된 클러스터면 ""로 설정해 bare 필드명을 쓴다. (EARS_VALUE/EARS_TIMESTAMP는
+    # 숫자/날짜라 미적용 — src/es/queries.py 참고)
+    es_keyword_suffix: str = ".keyword"
 
     # MongoDB (EARS DB shared with Akka)
     mongo_uri: SecretStr = SecretStr("mongodb://localhost:27017")

@@ -88,18 +88,18 @@ class TestBuildMetricAggregationQuery:
         body = self._q(qb)
         assert body["size"] == 0
         by_eqp = body["aggs"]["by_eqp"]
-        assert by_eqp["terms"]["field"] == "EARS_EQPID"
+        assert by_eqp["terms"]["field"] == "EARS_EQPID.keyword"
         assert by_eqp["terms"]["size"] == 30000
 
     def test_category_and_metric_and_time_filters(self, qb):
         filters = self._q(qb)["query"]["bool"]["filter"]
-        assert _terms(filters, "EARS_CATEGORY") == "cpu"
-        assert _terms(filters, "EARS_METRIC") == ["total_used_pct"]
+        assert _terms(filters, "EARS_CATEGORY.keyword") == "cpu"
+        assert _terms(filters, "EARS_METRIC.keyword") == ["total_used_pct"]
         assert any("range" in f and "EARS_TIMESTAMP" in f["range"] for f in filters)
 
     def test_proc_filter_when_concrete(self, qb):
         filters = self._q(qb, proc="@system")["query"]["bool"]["filter"]
-        assert _terms(filters, "EARS_PROCNAME") == "@system"
+        assert _terms(filters, "EARS_PROCNAME.keyword") == "@system"
 
     def test_max_subagg_over_ears_value(self, qb):
         leaf = self._q(qb)["aggs"]["by_eqp"]["aggs"]
@@ -132,12 +132,12 @@ class TestBuildMetricAggregationQuery:
         body = self._q(qb, proc="*")
         by_eqp_aggs = body["aggs"]["by_eqp"]["aggs"]
         assert "by_proc" in by_eqp_aggs
-        assert by_eqp_aggs["by_proc"]["terms"]["field"] == "EARS_PROCNAME"
+        assert by_eqp_aggs["by_proc"]["terms"]["field"] == "EARS_PROCNAME.keyword"
         # leaf facts live under by_proc, not directly under by_eqp
         assert "max" in by_eqp_aggs["by_proc"]["aggs"]
         # proc not term-filtered when wildcard
         filters = body["query"]["bool"]["filter"]
-        assert _terms(filters, "EARS_PROCNAME") is None
+        assert _terms(filters, "EARS_PROCNAME.keyword") is None
 
     def test_expand_instance_groups_by_metric(self, qb):
         body = self._q(
@@ -145,18 +145,17 @@ class TestBuildMetricAggregationQuery:
         )
         by_eqp_aggs = body["aggs"]["by_eqp"]["aggs"]
         assert "by_metric" in by_eqp_aggs
-        assert by_eqp_aggs["by_metric"]["terms"]["field"] == "EARS_METRIC"
+        assert by_eqp_aggs["by_metric"]["terms"]["field"] == "EARS_METRIC.keyword"
         assert "max" in by_eqp_aggs["by_metric"]["aggs"]
 
     def test_eqp_ids_restrict_filter(self, qb):
         filters = self._q(qb, eqp_ids=["E1", "E2"])["query"]["bool"]["filter"]
-        assert _terms(filters, "EARS_EQPID") == ["E1", "E2"]
+        assert _terms(filters, "EARS_EQPID.keyword") == ["E1", "E2"]
 
-
-class TestBuildMetricNamesQuery:
-    def test_terms_on_metric_with_category_filter(self, qb):
-        body = qb.build_metric_names_query(NOW, 15, "disk", proc="@system")
-        assert body["aggs"]["metrics"]["terms"]["field"] == "EARS_METRIC"
+    def test_keyword_suffix_configurable_to_bare(self):
+        # MONITOR_ES_KEYWORD_SUFFIX="" → bare 필드명(키워드 매핑 클러스터 대비 override)
+        bare_qb = QueryBuilder(AppSettings(es_keyword_suffix=""))
+        body = self._q(bare_qb)
+        assert body["aggs"]["by_eqp"]["terms"]["field"] == "EARS_EQPID"
         filters = body["query"]["bool"]["filter"]
-        assert _terms(filters, "EARS_CATEGORY") == "disk"
-        assert _terms(filters, "EARS_PROCNAME") == "@system"
+        assert _terms(filters, "EARS_CATEGORY") == "cpu"

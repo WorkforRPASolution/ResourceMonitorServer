@@ -208,8 +208,8 @@ class TestDeadPathRegression:
         async def search(index, body):
             eqp_ids = []
             for f in body["query"]["bool"]["filter"]:
-                if "terms" in f and "EARS_EQPID" in f["terms"]:
-                    eqp_ids = f["terms"]["EARS_EQPID"]
+                if "terms" in f and "EARS_EQPID.keyword" in f["terms"]:
+                    eqp_ids = f["terms"]["EARS_EQPID.keyword"]
             return {"aggregations": {"by_eqp": {"buckets": [
                 {"key": e, "max": {"value": 98.0}} for e in eqp_ids
             ]}}}

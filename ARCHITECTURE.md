@@ -149,7 +149,7 @@ AnalysisEngine.run_analysis(process, interval_minutes)
 
 ### fact별 ES 집계 전략 (EARS row 모델)
 
-실제 운영 문서는 **EARS row** (PRD §7.2): (장비, 메트릭, 샘플) 당 1 문서로 `EARS_CATEGORY`/`EARS_METRIC`/`EARS_VALUE`/`EARS_EQPID`/`EARS_PROCNAME`/`EARS_TIMESTAMP` 를 가짐(전부 bare `keyword`, `.keyword` 서브필드 없음). 메트릭 정체성은 **필터**(term on `EARS_CATEGORY` + `EARS_METRIC`)이고 집계 대상은 항상 단일 `EARS_VALUE` 컬럼. fact의 type 이름이 곧 집계 leaf의 키.
+실제 운영 문서는 **EARS row** (PRD §7.2): (장비, 메트릭, 샘플) 당 1 문서로 `EARS_CATEGORY`/`EARS_METRIC`/`EARS_VALUE`/`EARS_EQPID`/`EARS_PROCNAME`/`EARS_TIMESTAMP` 를 가짐. 문자열 필드는 **`text` + `.keyword` 서브필드**(운영 확인)라 term/terms 필터와 terms 집계는 **`<field>.keyword`** 를 쓴다(`settings.es_keyword_suffix`, 기본 `.keyword`). 메트릭 정체성은 **필터**(term on `EARS_CATEGORY.keyword` + `EARS_METRIC.keyword`)이고 집계 대상은 항상 단일 `EARS_VALUE`(numeric, bare) 컬럼. fact의 type 이름이 곧 집계 leaf의 키.
 
 | fact type | ES 집계 전략 (`AGG_STRATEGY`) | 파싱 |
 |-----------|------------------------------|------|

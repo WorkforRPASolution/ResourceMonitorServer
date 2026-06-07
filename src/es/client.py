@@ -26,7 +26,7 @@ from elasticsearch import AsyncElasticsearch
 from elasticsearch.exceptions import NotFoundError
 
 from src.config.settings import AppSettings
-from src.es.queries import CATEGORY_FIELD, METRIC_FIELD, PROC_FIELD
+from src.es.queries import CATEGORY_FIELD, METRIC_FIELD, PROC_FIELD, keyword_field
 
 logger = structlog.get_logger(__name__)
 
@@ -197,15 +197,20 @@ class ESClient:
         if cache_key in self._metric_names_negative:
             return _METRIC_NAMES_EMPTY
 
-        filters: list[dict] = [{"term": {CATEGORY_FIELD: category}}]
+        # EARS_* strings are text+.keyword in prod → filter/aggregate on .keyword
+        # (configurable via settings.es_keyword_suffix). See src/es/queries.py.
+        cat_field = keyword_field(CATEGORY_FIELD, self._settings)
+        proc_field = keyword_field(PROC_FIELD, self._settings)
+        metric_field = keyword_field(METRIC_FIELD, self._settings)
+        filters: list[dict] = [{"term": {cat_field: category}}]
         if proc != "*":
-            filters.append({"term": {PROC_FIELD: proc}})
+            filters.append({"term": {proc_field: proc}})
         body = {
             "size": 0,
             "query": {"bool": {"filter": filters}},
             "aggs": {
                 "metrics": {
-                    "terms": {"field": METRIC_FIELD, "size": _METRIC_NAMES_TERMS_SIZE}
+                    "terms": {"field": metric_field, "size": _METRIC_NAMES_TERMS_SIZE}
                 }
             },
         }

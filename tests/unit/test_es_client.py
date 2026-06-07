@@ -292,9 +292,9 @@ class TestGetMetricNames:
         await client.get_metric_names("cvd_all-*", "cpu", proc="@system")
         body = client._client.search.call_args.kwargs["body"]
         filters = body["query"]["bool"]["filter"]
-        assert {"term": {"EARS_CATEGORY": "cpu"}} in filters
-        assert {"term": {"EARS_PROCNAME": "@system"}} in filters
-        assert body["aggs"]["metrics"]["terms"]["field"] == "EARS_METRIC"
+        assert {"term": {"EARS_CATEGORY.keyword": "cpu"}} in filters
+        assert {"term": {"EARS_PROCNAME.keyword": "@system"}} in filters
+        assert body["aggs"]["metrics"]["terms"]["field"] == "EARS_METRIC.keyword"
 
     async def test_wildcard_proc_omits_proc_filter(self, settings):
         client = ESClient(settings)
@@ -302,7 +302,7 @@ class TestGetMetricNames:
         client._client.search.return_value = self._resp("required")
         await client.get_metric_names("cvd_all-*", "process_watch", proc="*")
         filters = client._client.search.call_args.kwargs["body"]["query"]["bool"]["filter"]
-        assert all("EARS_PROCNAME" not in f.get("term", {}) for f in filters)
+        assert all("EARS_PROCNAME.keyword" not in f.get("term", {}) for f in filters)
 
     async def test_caches_by_index_category_proc(self, settings):
         client = ESClient(settings)

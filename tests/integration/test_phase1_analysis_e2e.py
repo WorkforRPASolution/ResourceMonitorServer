@@ -73,12 +73,16 @@ async def _seed_es(real_es: Any, process: str, rows: list[dict[str, Any]]) -> st
     각 row = {eqpId, category, metric, value, [proc]} — EARS_* 필드로 매핑된다.
     """
     index = _index_name(process)
+    # 운영 EARS 인덱스와 동일하게 문자열 필드는 text + .keyword 서브필드로 매핑한다.
+    # (운영 확인됨) 이래야 코드의 `.keyword` 집계/필터 경로가 실제로 검증된다 —
+    # 과거 bare keyword 픽스처는 운영을 재현 못 해 집계 깨짐 버그를 못 잡았다.
+    _text_kw = {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 256}}}
     properties = {
         "EARS_TIMESTAMP": {"type": "date"},
-        "EARS_EQPID": {"type": "keyword"},
-        "EARS_PROCNAME": {"type": "keyword"},
-        "EARS_CATEGORY": {"type": "keyword"},
-        "EARS_METRIC": {"type": "keyword"},
+        "EARS_EQPID": _text_kw,
+        "EARS_PROCNAME": _text_kw,
+        "EARS_CATEGORY": _text_kw,
+        "EARS_METRIC": _text_kw,
         "EARS_VALUE": {"type": "double"},
     }
     await real_es.indices.delete(index=index, ignore=[404])
