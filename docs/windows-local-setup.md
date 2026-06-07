@@ -239,6 +239,35 @@ Invoke-RestMethod http://localhost:8080/admin/status | ConvertTo-Json
 
 ---
 
+## 7단계: 프로파일 컬렉션 준비 + 분석 트리거 (debug 모드)
+
+debug 모드는 스키마를 건드리지 않으므로 **`RESOURCE_MONITOR_PROFILE` 컬렉션이 자동 생성되지 않습니다.** 또 파티션 매니저가 없어 **분석 잡도 자동 등록되지 않습니다.** 아래 순서로 직접 준비합니다.
+
+> ⚠️ 7-1/7-2 는 대상 Mongo에 **쓰기**(컬렉션 생성 + 프로파일 insert)를 합니다. **운영 Mongo 무변경**을 원하면 `.env` 의 `MONITOR_MONGO_URI` 를 로컬 Mongo로 두세요.
+
+### 7-1. 빈 컬렉션 생성
+서버(debug)가 만들지 않으므로 스크립트로 생성합니다(빈 컬렉션 + `uniq_scope` 인덱스, 데이터 없음):
+```powershell
+.\scripts\create-profile-collection.ps1            # dry-run (대상/계획만 출력)
+.\scripts\create-profile-collection.ps1 -Yes       # 실제 생성
+```
+
+### 7-2. 프로파일 JSON 수동 입력
+`mongosh` / Compass 등으로 `RESOURCE_MONITOR_PROFILE` 에 프로파일 문서를 직접 insert 합니다. scope `(process, eqpModel, eqpId)` 는 유일해야 합니다(uniq_scope). 스키마는 [SCHEMA.md](../SCHEMA.md) 참고.
+> 분석이 실제로 돌려면 해당 process 에 **활성 EQP_INFO 장비**(`onoff=1, webmanagerUse=1`)도 있어야 합니다. 로컬 Mongo면 EQP_INFO 문서도 같이 넣어야 합니다.
+
+### 7-3. 분석 트리거 + 확인
+debug 모드는 자동 reload 가 없으므로 수동 트리거합니다:
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8080/admin/scheduler/reload
+Invoke-RestMethod http://localhost:8080/admin/status | ConvertTo-Json -Depth 5   # scheduled_jobs 확인
+```
+- 앱 로그 `scheduler_reloaded` 의 `job_count` 가 0 이면 → 해당 process 에 프로파일이 없는 것.
+- 잡은 rule 의 `interval_minutes` 마다 틱 → 첫 분석은 그 간격 후(`/admin/status` 의 `next_run` 확인).
+- 임계 초과 시 로그에 **`debug_would_send_email`**(발송 suppress)이 뜨면 **조회→분석→알림 전 구간이 운영 데이터로 검증된 것**입니다.
+
+---
+
 ## 종료
 
 실행 중인 터미널에서 `Ctrl+C` 를 누르면 graceful shutdown 됩니다.
@@ -265,6 +294,11 @@ ERROR: Package 'resource-monitor-server' requires a different Python: 3.10.9 not
 Test-NetConnection -ComputerName <es-host> -Port 9200
 ```
 `TcpTestSucceeded: True` 가 아니면 방화벽/VPN 문제.
+
+### ES: `not Elasticsearch ... unknown product` / `GET /` 가 302
+원인: `MONITOR_ES_HOSTS` 가 **ES API(9200)가 아니라 Kibana/포털**을 가리키거나 앞단 프록시가 로그인으로 302 함 → elasticsearch-py 가 "정품 ES 아님"으로 판정해 부팅 실패(`es_startup_ping_failed`).
+- `curl -i http://<host>:9200/` 로 확인: 정상 ES 면 `tagline: "You Know, for Search"` JSON. `Location: /login...` 302 면 Kibana/게이트웨이임.
+- 운영 ES 는 보통 **클러스터 내부 DNS**(예 `elasticsearch.observability:9200`, 인증 `elastic`)라 PC 에서 직접 안 닿습니다. `kubectl -n observability port-forward svc/elasticsearch 9200:9200` 후 `MONITOR_ES_HOSTS=http://localhost:9200` + `MONITOR_ES_USERNAME=elastic` / `MONITOR_ES_PASSWORD=<비번>` 설정. (실제 주소는 `k8s/configmap.yaml` 참고)
 
 ### MongoDB 인증 실패
 ```

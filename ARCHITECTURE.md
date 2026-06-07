@@ -612,8 +612,8 @@ async def _do_redistribute(self, instances):
 | 위치 | 변경 |
 |------|------|
 | `src/startup/infra.py` | `ZKClient.connect()` 스킵 → `infra.zk = None` |
-| `src/startup/repos.py` | `db[COLL_PROFILE].create_index(uniq_scope)` 스킵 |
-| `src/main.py` lifespan | `seed_default_profile`, `init_distributed`, `partition_manager.start`, `leader_election.start` 스킵 |
+| `src/startup/repos.py` | `create_collection(COLL_PROFILE)` + `create_index(uniq_scope)` 스킵 (`scripts/create-profile-collection.ps1` 로 수동) |
+| `src/main.py` lifespan | `init_distributed`, `partition_manager.start`, `leader_election.start` 스킵 (startup 자동 seed 없음 — 프로파일은 JSON 수동 입력) |
 | `src/cache/cooldown.py` | `set_cooldown` / `clear_cooldown` / `is_cooling_down[_batch]` Redis 우회 — local TTLCache 만 사용 |
 | `src/alert/email_client.py` | `send_alert` HTTP POST 차단 → `debug_would_send_email` 로그 + `True` 반환 |
 

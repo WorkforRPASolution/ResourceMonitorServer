@@ -185,6 +185,9 @@ class TestInitRepos:
         ctx.mongo.db = MagicMock()
         ctx.mongo.db.__getitem__.side_effect = _getitem
         ctx.mongo.db._collections = collections  # test introspection
+        # motor db-level async methods used by init_repos
+        ctx.mongo.db.list_collection_names = AsyncMock(return_value=[])
+        ctx.mongo.db.create_collection = AsyncMock()
         return ctx
 
     async def test_init_repos_returns_both_repositories(self, settings):
@@ -212,6 +215,25 @@ class TestInitRepos:
         # name is encouraged for idempotent re-runs
         assert kwargs.get("name") == "uniq_scope"
 
+    async def test_init_repos_creates_collection_if_absent(self, settings):
+        """★ New: init_repos must create an EMPTY RESOURCE_MONITOR_PROFILE
+        collection when it does not yet exist (non-debug). Data is inserted
+        manually (JSON) afterward — startup no longer seeds a default profile."""
+        ctx = self._make_infra()
+        ctx.mongo.db.list_collection_names = AsyncMock(return_value=[])
+        await init_repos(ctx, settings)
+        ctx.mongo.db.create_collection.assert_awaited_once_with(COLL_PROFILE)
+
+    async def test_init_repos_skips_create_collection_when_present(self, settings):
+        """Idempotent: if the collection already exists, do NOT re-create it,
+        but still ensure the unique index."""
+        ctx = self._make_infra()
+        ctx.mongo.db.list_collection_names = AsyncMock(return_value=[COLL_PROFILE])
+        await init_repos(ctx, settings)
+        ctx.mongo.db.create_collection.assert_not_awaited()
+        profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
+        profile_coll.create_index.assert_awaited_once()
+
     async def test_init_repos_raises_if_mongo_not_connected(self, settings):
         ctx = InfraContext()  # mongo is None
         with pytest.raises(RuntimeError, match="connected MongoClient"):
@@ -229,6 +251,7 @@ class TestInitRepos:
         # Repositories still wired up
         assert repos.profile_repo is not None
         assert repos.eqp_info_repo is not None
-        # But create_index NOT called
+        # But neither create_collection NOR create_index called (no prod schema mutation)
         profile_coll = ctx.mongo.db._collections[COLL_PROFILE]
         profile_coll.create_index.assert_not_awaited()
+        ctx.mongo.db.create_collection.assert_not_awaited()

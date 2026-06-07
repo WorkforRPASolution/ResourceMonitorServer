@@ -83,7 +83,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 | 구성 요소 | 정상 모드 | Debug Read-Only |
 |----------|----------|---------------|
-| MongoDB | 읽기 + startup 쓰기 | **읽기만** (`create_index`, `seed_default_profile` 스킵) |
+| MongoDB | 읽기 + startup 스키마 생성 (빈 컬렉션 + `uniq_scope` 인덱스, seed 없음) | **읽기만** (`create_collection`/`create_index` 스킵 → `scripts/create-profile-collection.ps1` 로 수동) |
 | Elasticsearch | 읽기 | 읽기 (동일) |
 | Zookeeper | 참여 | **연결 안 함** (`init_distributed`/`leader_election`/`partition_manager` 전부 스킵) |
 | Redis | cooldown 읽기/쓰기 | **읽기만** — local TTLCache 만 사용 |
@@ -137,7 +137,7 @@ src/
 │   ├── client.py           # MongoClient (motor) — close()는 sync
 │   ├── models.py           # MonitorProfile / Scope / Measure / Rule / Fact / NotifyChannel / Governance + fold_profiles / validate_effective (Pydantic v2)
 │   ├── repository.py       # ProfileRepository(resolve_profile cascade fold) / EqpInfoRepository
-│   └── seed.py             # 기본 프로파일 structural SHA256 비교 후 upsert
+│   └── seed.py             # 기본 프로파일 빌더(structural SHA256 비교 후 upsert) — startup 자동호출 아님 (테스트 전용)
 ├── cache/
 │   ├── redis_client.py     # protocol=2 (Redis 5.0.6 호환)
 │   └── cooldown.py         # AlertCooldownManager + local TTLCache fallback

@@ -331,8 +331,7 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 | 위치 | 차단 내용 | 가드 |
 |------|----------|------|
-| `src/startup/repos.py` | `create_index(uniq_scope)` | `if not settings.debug_read_only` |
-| `src/main.py` lifespan | `seed_default_profile` 스킵 | phase skip |
+| `src/startup/repos.py` | `create_collection` + `create_index(uniq_scope)` 스킵 (빈 컬렉션도 안 만듦 → `scripts/create-profile-collection.ps1` 로 수동) | `if not settings.debug_read_only` |
 | `src/main.py` lifespan | `init_distributed` (ZK 참여) 스킵 | phase skip |
 | `src/main.py` lifespan | `leader_election.start` / `partition_manager.start` 스킵 | phase skip |
 | `src/startup/infra.py` | `ZKClient.connect()` 스킵 — `infra.zk = None` 유지 | `if settings.debug_read_only` |

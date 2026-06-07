@@ -52,8 +52,7 @@ data:
   # ⚠️ DO NOT SET MONITOR_DEBUG_READ_ONLY IN PRODUCTION
   #
   # MONITOR_DEBUG_READ_ONLY=true causes the service to skip:
-  #   - init_repos create_index
-  #   - seed_default_profile
+  #   - init_repos create_collection + create_index (빈 컬렉션도 안 만듦)
   #   - init_distributed (ZK 참여 없음)
   #   - leader_election, partition_manager
   #   - email send_alert (로그만)
