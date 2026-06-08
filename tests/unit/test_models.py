@@ -137,6 +137,25 @@ class TestMonitorProfileRoundtrip:
         restored = MonitorProfile.from_mongo(doc)
         assert restored.rules[0].enabled is True
 
+    def test_notify_group_by_roundtrips(self):
+        p = _make_profile(notify={"default": NotifyChannel(
+            cooldown_minutes=30, group_by="model",
+            representatives={"MODEL_A": "EQP001"})})
+        doc = p.to_mongo()
+        assert doc["notify"]["default"]["group_by"] == "model"
+        restored = MonitorProfile.from_mongo(doc)
+        assert restored.notify["default"].group_by == "model"
+        assert restored.notify["default"].representatives == {"MODEL_A": "EQP001"}
+
+    def test_legacy_notify_without_group_by_defaults_eqp(self):
+        """Existing Mongo docs predate notify.group_by — loading must default eqp."""
+        doc = _make_profile().to_mongo()
+        doc["notify"]["default"].pop("group_by", None)
+        doc["notify"]["default"].pop("representatives", None)
+        restored = MonitorProfile.from_mongo(doc)
+        assert restored.notify["default"].group_by == "eqp"
+        assert restored.notify["default"].representatives == {}
+
     def test_duplicate_measure_id_rejected(self):
         with pytest.raises(ValueError, match="duplicate measure id"):
             _make_profile(

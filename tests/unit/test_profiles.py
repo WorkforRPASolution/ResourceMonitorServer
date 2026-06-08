@@ -277,6 +277,20 @@ class TestItemCrud:
         assert r.status_code == 200
         repo.replace_with_version.assert_awaited_once()
 
+    def test_patch_notify_group_by_roundtrips(self, client, repo):
+        repo.find_by_scope.return_value = _overlay()
+        repo.collect_scope_docs.return_value = [_overlay()]
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "channel": {"cooldown_minutes": 30, "group_by": "model",
+                        "representatives": {"MODEL_A": "EQP001"}},
+        }
+        r = client.patch("/profiles/notify/default", json=body)
+        assert r.status_code == 200
+        overlay = repo.replace_with_version.await_args.args[0]
+        assert overlay.notify["default"].group_by == "model"
+        assert overlay.notify["default"].representatives == {"MODEL_A": "EQP001"}
+
     def _process_doc(self):
         return MonitorProfile(
             scope=Scope(process="CVD"),

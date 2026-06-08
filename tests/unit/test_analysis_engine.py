@@ -254,3 +254,100 @@ class TestDeadPathRegression:
         assert ("EQP01", "CRITICAL") not in by_eqp_sev
         # overlay equipment: the CRITICAL rule from the overlay DID reach alerts
         assert ("EQP02", "CRITICAL") in by_eqp_sev
+
+
+# ----------------------------------------------------------------------
+# Group send (notify.group_by) — collapse N equipment into one email
+# ----------------------------------------------------------------------
+_EQP_A1 = {"eqpId": "EQP-A1", "eqpModel": "MODEL_A", "process": "CVD",
+           "localpc": "PCA1", "ipAddr": "10.0.0.11", "line": "L1", "category": "MAIN"}
+_EQP_A2 = {"eqpId": "EQP-A2", "eqpModel": "MODEL_A", "process": "CVD",
+           "localpc": "PCA2", "ipAddr": "10.0.0.12", "line": "L1", "category": "MAIN"}
+_EQP_B1 = {"eqpId": "EQP-B1", "eqpModel": "MODEL_B", "process": "CVD",
+           "localpc": "PCB1", "ipAddr": "10.0.0.21", "line": "L2", "category": "MAIN"}
+
+
+def _cpu_profile_group(group_by="eqp", representatives=None):
+    return MonitorProfile(
+        scope=Scope(process="*"),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=15, facts=[Fact(type="max")])],
+        rules=[Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=80)])],
+        notify={"default": NotifyChannel(cooldown_minutes=30, group_by=group_by,
+                                         representatives=representatives or {})},
+    )
+
+
+def _search_all_breach(value=99.0):
+    async def _search(index, body):
+        eqp_ids = []
+        for f in body["query"]["bool"]["filter"]:
+            if "terms" in f and "EARS_EQPID.keyword" in f["terms"]:
+                eqp_ids = f["terms"]["EARS_EQPID.keyword"]
+        return {"aggregations": {"by_eqp": {"buckets": [
+            {"key": e, "max": {"value": value}} for e in eqp_ids
+        ]}}}
+    return _search
+
+
+class TestGroupSend:
+    async def test_group_by_eqp_default_one_email_each(self):
+        # regression guard: default eqp mode keeps per-equipment fan-out
+        deps = _make_deps(_cpu_profile_group("eqp"),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        result = await _engine(deps).run_analysis("CVD", 5)
+        assert deps.email_client.send_alert.await_count == 2
+        assert {b.eqp_id for b in result.breaches} == {"EQP-A1", "EQP-A2"}
+
+    async def test_group_by_model_collapses_to_one(self):
+        deps = _make_deps(_cpu_profile_group("model"),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        await _engine(deps).run_analysis("CVD", 5)
+        assert deps.email_client.send_alert.await_count == 1
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert alert.hostname == "EQP-A1"  # representative = min eqpId
+        assert alert.variables["AffectedEquipment"] == "EQP-A1, EQP-A2"
+        assert alert.variables["AffectedCount"] == "2"
+        deps.cooldown_mgr.set_cooldown.assert_awaited_once_with(
+            "CVD", "MODEL_A", "@system", "default", "WARNING", 30
+        )
+
+    async def test_group_by_model_representative_pinned(self):
+        deps = _make_deps(_cpu_profile_group("model", {"MODEL_A": "EQP-A2"}),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        await _engine(deps).run_analysis("CVD", 5)
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert alert.hostname == "EQP-A2"  # pinned representative
+
+    async def test_group_by_model_pinned_absent_falls_back_to_min(self):
+        deps = _make_deps(_cpu_profile_group("model", {"MODEL_A": "EQP-ZZ"}),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        await _engine(deps).run_analysis("CVD", 5)
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert alert.hostname == "EQP-A1"
+
+    async def test_group_by_process_spans_models_one_email(self):
+        # ⚠ routing caveat: MODEL_A + MODEL_B under process grouping → ONE email
+        # (addressed via the representative's category only — documented limit).
+        deps = _make_deps(_cpu_profile_group("process"),
+                          equipment=[_EQP_A1, _EQP_B1], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        await _engine(deps).run_analysis("CVD", 5)
+        assert deps.email_client.send_alert.await_count == 1
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert set(alert.variables["AffectedEquipment"].split(", ")) == {"EQP-A1", "EQP-B1"}
+
+    async def test_group_cooldown_suppresses(self):
+        deps = _make_deps(_cpu_profile_group("model"),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        deps.cooldown_mgr.is_cooling_down_batch = AsyncMock(return_value={
+            ("CVD", "MODEL_A", "@system", "default", "WARNING"): True,
+        })
+        await _engine(deps).run_analysis("CVD", 5)
+        deps.email_client.send_alert.assert_not_awaited()

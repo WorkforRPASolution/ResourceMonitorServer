@@ -145,8 +145,14 @@ EQP_INFO 계층을 따릅니다. 구체적 scope가 더 넓은 scope를 **상속
 | `notify.<name>.cooldown_minutes` | int | ✓ | — | Redis cooldown TTL (이메일 폭주 방지) |
 | `notify.<name>.email_code` | string | | `"RESOURCE_MONITOR"` | `EMAIL_TEMPLATE_REPOSITORY` 매칭 코드 |
 | `notify.<name>.email_subcode` | string\|null | | `null` | `null`이면 `"{category}_{severity}"` 자동 |
+| `notify.<name>.group_by` | enum | | `"eqp"` | **발송 단위**: `eqp`(장비별, 현행) / `model` / `process`. `eqp` 외엔 같은 그룹의 장비 breach를 **메일 1통으로 집계** |
+| `notify.<name>.representatives` | object | | `{}` | 그룹값→대표 eqpId 오버라이드(예 `{"MODEL_A":"EQP001"}`). 그룹 메일의 `hostname`(수신자 해석 기준). 미지정 시 그룹 내 최소 eqpId 자동 |
 
-**cooldown 키** = `{prefix}:cooldown:{process}:{eqpId}:{proc}:{notify}:{severity}` — 같은 (장비, proc, 알림채널, 심각도) 단위로 억제. 같은 notify를 공유하는 rule들은 한 사건으로 묶입니다.
+**cooldown 키** = `{prefix}:cooldown:{process}:{group}:{proc}:{notify}:{severity}` — `group`은 `group_by="eqp"`면 eqpId(현행과 동일), `model`/`process`면 그 값. 같은 (그룹, proc, 알림채널, 심각도) 단위로 억제·집계되며, 같은 notify를 공유하는 rule들은 한 사건으로 묶입니다.
+
+**그룹 발송(`group_by` ≠ `eqp`)**: 한 그룹에 걸린 장비들을 **메일 1통**으로 모읍니다. 1통의 `hostname`=대표 eqpId(`representatives` 지정값 또는 최소 eqpId) → Akka가 **대표의 emailCategory**로 수신자 해석(엔드포인트·EQP_INFO/EMAILINFO 구조 무변경). 걸린 장비 목록은 알림 변수 `AffectedEquipment`/`AffectedCount`로 전달(템플릿에서 사용).
+
+> ⚠️ **라우팅 한계**: 수신자는 *대표 1대*의 emailCategory(`EMAIL-[process]-[model]-[group]`)다. `model` 그룹은 보통 단일 category로 정확하지만, **`process` 그룹은 모델이 섞이면 여러 category**가 되어 대표 모델 담당만 통지되고 타 모델은 누락될 수 있다. 이 경우 `representatives`로 대표를 명시하거나 `model` 단위를 쓴다. (장비별 상세를 본문에 HTML 표로 넣는 `@contents`는 후속 작업.)
 
 ---
 

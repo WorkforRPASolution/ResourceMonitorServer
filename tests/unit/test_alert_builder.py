@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.analyzer.alert_builder import build_alert_request, make_cooldown_key
+from src.analyzer.alert_builder import (
+    build_alert_request,
+    make_cooldown_key,
+    resolve_group_value,
+)
 from src.analyzer.threshold import ThresholdBreach
 from src.db.models import NotifyChannel
 
@@ -126,3 +130,45 @@ class TestMakeCooldownKey:
     def test_proc_and_severity_in_key(self):
         key = make_cooldown_key("CVD", _breach(proc="svc", severity="CRITICAL"), "pager")
         assert key == ("CVD", "EQP01", "svc", "pager", "CRITICAL")
+
+    def test_group_value_replaces_eqp_position(self):
+        # group send: the eqp slot carries the group identifier instead
+        key = make_cooldown_key("CVD", _breach(), "default", group_value="MODEL-X")
+        assert key == ("CVD", "MODEL-X", "@system", "default", "WARNING")
+
+    def test_group_value_none_falls_back_to_eqp(self):
+        key = make_cooldown_key("CVD", _breach(), "default", group_value=None)
+        assert key == ("CVD", "EQP01", "@system", "default", "WARNING")
+
+
+class TestResolveGroupValue:
+    def test_eqp_uses_eqp_id(self):
+        b = _breach(eqp_id="EQP07")
+        assert resolve_group_value("eqp", b, {"eqpModel": "MODEL-X"}, "CVD") == "EQP07"
+
+    def test_model_uses_eqp_model(self):
+        b = _breach(eqp_id="EQP07")
+        assert resolve_group_value("model", b, {"eqpModel": "MODEL-X"}, "CVD") == "MODEL-X"
+
+    def test_process_uses_process(self):
+        b = _breach(eqp_id="EQP07")
+        assert resolve_group_value("process", b, {"eqpModel": "MODEL-X"}, "CVD") == "CVD"
+
+
+class TestAffectedEquipment:
+    def test_affected_adds_variables(self):
+        req = build_alert_request(
+            _breach(), _EQP, "CVD", _make_settings(),
+            NotifyChannel(cooldown_minutes=30, group_by="model"),
+            window_minutes=15, affected_equipment=["EQP01", "EQP02", "EQP03"],
+        )
+        assert req.variables["AffectedEquipment"] == "EQP01, EQP02, EQP03"
+        assert req.variables["AffectedCount"] == "3"
+
+    def test_no_affected_keeps_variable_set_unchanged(self):
+        req = build_alert_request(
+            _breach(), _EQP, "CVD", _make_settings(),
+            NotifyChannel(cooldown_minutes=30), window_minutes=15,
+        )
+        assert "AffectedEquipment" not in req.variables
+        assert "AffectedCount" not in req.variables

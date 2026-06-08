@@ -632,14 +632,26 @@
       <tr><td><code>notify.&lt;name&gt;.cooldown_minutes</code></td><td>int</td><td class="c req">✓</td><td class="c">—</td><td>같은 사건 재알림 억제 시간(Redis TTL)</td></tr>
       <tr><td><code>notify.&lt;name&gt;.email_code</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"RESOURCE_MONITOR"</code></td><td><code>EMAIL_TEMPLATE_REPOSITORY</code> 매칭 코드</td></tr>
       <tr><td><code>notify.&lt;name&gt;.email_subcode</code></td><td>string｜null</td><td class="c opt">선택</td><td class="c"><code>null</code></td><td><code>null</code>이면 <code>"{category}_{severity}"</code> 자동</td></tr>
+      <tr><td><code>notify.&lt;name&gt;.group_by</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>"eqp"</code></td><td>발송 단위: <code>eqp</code>(장비별, 현행) / <code>model</code> / <code>process</code></td></tr>
+      <tr><td><code>notify.&lt;name&gt;.representatives</code></td><td>object</td><td class="c opt">선택</td><td class="c"><code>{}</code></td><td>그룹값→대표 eqpId(예 <code>{"MODEL_A":"EQP001"}</code>). 미지정 시 최소 eqpId 자동</td></tr>
     </tbody>
   </table>
   <h3>cooldown(이메일 폭주 방지) 키</h3>
-  <p>같은 (장비, proc, 알림채널, 심각도) 단위로 재알림을 억제합니다. 키 형식:</p>
-<pre>{prefix}:cooldown:{process}:{eqpId}:{proc}:{notify}:{severity}</pre>
-  <p>같은 <code>notify</code> 채널을 공유하는 rule들은 한 사건으로 묶여 함께 억제됩니다.</p>
-<pre><span class="tok-key">"notify"</span>: {
-  <span class="tok-key">"default"</span>: { <span class="tok-key">"cooldown_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"email_code"</span>: <span class="tok-str">"RESOURCE_MONITOR"</span> }
+  <p>같은 (그룹, proc, 알림채널, 심각도) 단위로 재알림을 억제합니다. 키 형식:</p>
+<pre>{prefix}:cooldown:{process}:{group}:{proc}:{notify}:{severity}</pre>
+  <p><code>group</code>은 <code>group_by="eqp"</code>면 eqpId(현행과 동일), <code>model</code>/<code>process</code>면 그 값입니다. 같은 <code>notify</code> 채널을 공유하는 rule들은 한 사건으로 묶여 함께 억제됩니다.</p>
+
+  <h3><code>group_by</code> — 메일 발송 단위(집계)</h3>
+  <p class="analogy">광범위 scope에서 장비 N대가 동시에 걸리면 기본(<code>eqp</code>)은 <b>N통</b>이 나갑니다. <code>model</code>/<code>process</code>로 묶으면 같은 그룹을 <b>메일 1통으로 집계</b>해 폭주를 막습니다.</p>
+  <ul>
+    <li><b>주소(수신자)</b>: 그룹 메일 1통은 <b>대표 eqpId</b>(<code>representatives</code> 지정값, 없으면 그룹 내 최소 eqpId)를 <code>hostname</code>으로 보내고, Akka가 <b>대표의 emailCategory</b>로 수신자를 해석합니다(엔드포인트·EQP_INFO/EMAILINFO 구조 무변경).</li>
+    <li><b>본문</b>: 걸린 장비 목록이 알림 변수 <code>AffectedEquipment</code>/<code>AffectedCount</code>로 전달됩니다(템플릿에서 사용). 대표 1대 기준 값(MetricName/CurrentValue 등)은 그대로.</li>
+  </ul>
+  <div class="note warn"><span class="tag">⚠️ 라우팅 한계</span> 수신자는 <b>대표 1대</b>의 emailCategory(<code>EMAIL-[process]-[model]-[group]</code>)입니다. <code>model</code> 그룹은 보통 단일 category로 정확하지만, <b><code>process</code> 그룹은 모델이 섞이면 여러 category</b>가 되어 대표 모델 담당만 통지되고 타 모델은 누락될 수 있습니다. <code>representatives</code>로 대표를 명시하거나 <code>model</code> 단위를 쓰세요. (장비별 상세를 본문 HTML 표로 넣는 <code>@contents</code>는 후속.)</div>
+<pre><span class="tok-com">// 모델 단위로 1통 집계, MODEL_A 그룹은 EQP001을 대표(수신자)로 고정</span>
+<span class="tok-key">"notify"</span>: {
+  <span class="tok-key">"default"</span>: { <span class="tok-key">"cooldown_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"email_code"</span>: <span class="tok-str">"RESOURCE_MONITOR"</span>,
+               <span class="tok-key">"group_by"</span>: <span class="tok-str">"model"</span>, <span class="tok-key">"representatives"</span>: { <span class="tok-key">"MODEL_A"</span>: <span class="tok-str">"EQP001"</span> } }
 }</pre>
 </section>
 
@@ -918,7 +930,8 @@ window.__SCHEMA_GUIDE_COVERAGE = [
   // 연산자 7 + 정량자 3
   ">=",">","<=","<","==","!=","trend==","any","all","count",
   // notify
-  "cooldown_minutes","email_code","email_subcode",
+  "cooldown_minutes","email_code","email_subcode","group_by","representatives",
+  "AffectedEquipment","라우팅 한계",
   // 검증 규칙 1~10 (각 규칙 식별 문구)
   "measure id 유일","시간축 fact","bucketing.seconds × points","baseline_dev",
   "ALLOWED_OPS","interval_minutes ≤","count_min ≥ 1","동일 proc","dead fact",

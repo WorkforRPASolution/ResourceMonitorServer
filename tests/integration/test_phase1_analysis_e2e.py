@@ -359,6 +359,40 @@ async def test_multi_equipment_partial(real_es, phase1_db, real_redis, ns, mock_
 
 
 # ======================================================================
+# E6b — notify.group_by="model": 동일 모델 다중 장비 → 메일 1통(집계)
+# ======================================================================
+async def test_group_by_model_collapses_to_one_email(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process = "E2E_GROUP"
+    index = await _seed_es(real_es, process, [
+        {"eqpId": "E2E-G-01", "category": "cpu", "metric": "total_used_pct", "value": 91.0},
+        {"eqpId": "E2E-G-02", "category": "cpu", "metric": "total_used_pct", "value": 99.0},
+    ])
+    for e in ("E2E-G-01", "E2E-G-02"):
+        await _seed_eqp_info(phase1_db, process, e, eqpModel="MODEL-G")
+    profile = MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[_warn()],
+        notify={"default": NotifyChannel(cooldown_minutes=30, group_by="model")},
+    )
+    await _seed_profile(phase1_db, profile)
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert {b.eqp_id for b in result.breaches} == {"E2E-G-01", "E2E-G-02"}
+    received = mock_email_server["received"]
+    assert len(received) == 1  # 동일 모델 2대 → 1통으로 집계
+    (payload,) = received
+    assert payload["hostname"] == "E2E-G-01"  # 대표 = 최소 eqpId
+    assert set(payload["variables"]["AffectedEquipment"].split(", ")) == {"E2E-G-01", "E2E-G-02"}
+    assert payload["variables"]["AffectedCount"] == "2"
+
+
+# ======================================================================
 # E7 — 🔴 dead-path 회귀 가드: model overlay 가 실제 알림에 반영
 # ======================================================================
 async def test_model_overlay_reaches_alerts(real_es, phase1_db, real_redis, ns, mock_email_server):
