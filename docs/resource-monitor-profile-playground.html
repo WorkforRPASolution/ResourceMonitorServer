@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
 <title>설비 모니터링 설정 가이드 &amp; Playground (RESOURCE_MONITOR_PROFILE)</title>
 <style>
   :root{
@@ -258,6 +259,13 @@
         <label>규칙 이름</label>
         <input type="text" id="rule-id" value="cpu_warn">
       </div>
+      <div class="field">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text);">
+          <input type="checkbox" id="rule-enabled" checked style="width:auto; margin:0;">
+          이 규칙 사용 (enabled)
+        </label>
+        <div class="hint">끄면 저장은 되지만 평가·스케줄에서 제외됩니다 (규칙 개별 on/off).</div>
+      </div>
       <div class="row c3">
         <div class="field">
           <label>평가 주기 (interval, 분)</label>
@@ -379,7 +387,7 @@ function defaultState(){
     measure:{ id:"cpu", category:"cpu", metric:"total_used_pct", proc:"@system", window_minutes:15,
               facts:[ {type:"max", over:90, direction:"above"} ] },
     rule:{ id:"cpu_warn", interval_minutes:5, severity:"WARNING", combine:"AND",
-           when:[ {fact:"cpu.max", op:">=", value:80} ], notify:"default" },
+           when:[ {fact:"cpu.max", op:">=", value:80} ], notify:"default", enabled:true },
     notify:{ cooldown_minutes:30, email_code:"RESOURCE_MONITOR" },
   };
 }
@@ -442,6 +450,11 @@ function bindStaticInputs(){
     refreshMetricList();
     updateOutput();
   });
+  // rule enabled 체크박스 (checkbox라 .checked 별도 처리)
+  document.getElementById('rule-enabled').addEventListener('change', e=>{
+    state.rule.enabled = e.target.checked;
+    updateOutput();
+  });
 }
 
 function bindButtons(){
@@ -488,6 +501,7 @@ function syncFormFromState(){
   document.getElementById('rule-severity').value = state.rule.severity;
   document.getElementById('rule-combine').value  = state.rule.combine;
   document.getElementById('rule-notify').value   = state.rule.notify;
+  document.getElementById('rule-enabled').checked = state.rule.enabled !== false;
   document.getElementById('notify-cooldown').value = state.notify.cooldown_minutes;
   document.getElementById('notify-emailcode').value= state.notify.email_code;
 }
@@ -631,6 +645,7 @@ function buildProfile(){
   if(when.length>1) rule.combine = r.combine;
   rule.when = when;
   rule.notify = r.notify;
+  if(r.enabled === false) rule.enabled = false;  // 기본 true는 생략, 끈 경우만 표기
 
   return {
     scope:{ process:state.scope.process, eqpModel:state.scope.eqpModel, eqpId:state.scope.eqpId },

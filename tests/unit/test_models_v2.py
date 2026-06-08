@@ -141,6 +141,16 @@ class TestRuleAndNotify:
                  when=[Condition(fact="cpu.max", op=">=", value=80)])
         assert r.combine == "AND" and r.notify == "default"
 
+    def test_rule_enabled_defaults_true(self):
+        r = Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=80)])
+        assert r.enabled is True
+
+    def test_rule_can_be_disabled(self):
+        r = Rule(id="cpu_warn", interval_minutes=5, severity="WARNING", enabled=False,
+                 when=[Condition(fact="cpu.max", op=">=", value=80)])
+        assert r.enabled is False
+
     def test_rule_when_must_be_nonempty(self):
         with pytest.raises(ValidationError):
             Rule(id="x", interval_minutes=5, severity="WARNING", when=[])

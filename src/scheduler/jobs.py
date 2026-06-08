@@ -122,6 +122,8 @@ class AnalysisScheduler:
             # scoped to a specific model/equipment would then never be scheduled.
             # The engine re-resolves the effective profile per equipment at run
             # time, so thresholds/overrides still apply; here we only need cadence.
+            # Only enabled rules contribute their interval (a disabled rule needs
+            # no job — the engine skips it anyway). See get_scheduling_intervals.
             intervals = await self._deps.profile_repo.get_scheduling_intervals(
                 process
             )

@@ -252,13 +252,15 @@ class ProfileRepository:
         still apply correctly; this method only decides the job cadence.
 
         Only ``enabled: true`` docs contribute (a fully-disabled profile gets
-        no job). The runtime engine still re-checks ``profile.enabled`` per
-        equipment.
+        no job), and within a doc only ``enabled`` rules count (a disabled rule
+        needs no job — the engine skips it anyway). Rules predating the
+        ``enabled`` field are treated as enabled. The runtime engine still
+        re-checks ``profile.enabled`` and each ``rule.enabled`` per equipment.
         """
         try:
             cursor = self._collection.find(
                 {"scope.process": {"$in": [process, "*"]}, "enabled": True},
-                {"_id": 0, "rules.interval_minutes": 1},
+                {"_id": 0, "rules.interval_minutes": 1, "rules.enabled": 1},
             )
             docs = await cursor.to_list(None)
         except _MONGO_UNAVAILABLE_EXC as e:
@@ -266,6 +268,8 @@ class ProfileRepository:
         intervals: set[int] = set()
         for doc in docs:
             for rule in doc.get("rules", []):
+                if rule.get("enabled", True) is False:
+                    continue
                 iv = rule.get("interval_minutes")
                 if isinstance(iv, int):
                     intervals.add(iv)

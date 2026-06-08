@@ -218,7 +218,7 @@
   <span class="tok-key">"rules"</span>:    [ <span class="tok-com">/* 판단: fact로 경보 결정 + 평가 주기 */</span> ],
   <span class="tok-key">"notify"</span>:   { <span class="tok-com">/* 알린다: 전달 채널 */</span> }
 }</pre>
-  <p><code>enabled</code> 는 이 설정 전체를 켜고 끄는 스위치(기본 <code>true</code>)이고, <code>governance</code> 는 누가 언제 왜 바꿨는지(<code>version</code>·<code>updated_by</code>·<code>updated_at</code>·<code>change_reason</code>)를 담는 변경 이력입니다. <code>version</code> 은 동시 수정 충돌을 막는 낙관적 잠금 토큰으로도 쓰입니다.</p>
+  <p><code>enabled</code> 는 이 설정 전체를 켜고 끄는 스위치(기본 <code>true</code>)이고, <code>governance</code> 는 누가 언제 왜 바꿨는지(<code>version</code>·<code>updated_by</code>·<code>updated_at</code>·<code>change_reason</code>)를 담는 변경 이력입니다. <code>version</code> 은 동시 수정 충돌을 막는 낙관적 잠금 토큰으로도 쓰입니다. (이 문서 전체 스위치와 별개로, <b>rule 하나만</b> 끄는 <code>rule.enabled</code>도 있습니다 — <a href="#s6">§6 예시 ⑨</a>.)</p>
   <div class="note"><span class="tag">DB 위치</span> 모든 컬렉션은 단일 <code>EARS</code> MongoDB에 공존합니다. RMS는 <code>RESOURCE_MONITOR_PROFILE</code> 만 소유(읽기·쓰기)하고 <code>EQP_INFO</code> 등은 read-only로 참조합니다.</div>
 </section>
 
@@ -468,6 +468,7 @@
       <tr><td><code>when[].quantifier</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>any</code></td><td>인스턴스 정량화: <code>any</code>/<code>all</code>/<code>count</code></td></tr>
       <tr><td><code>when[].count_min</code></td><td>int｜null</td><td class="c cond">조건부</td><td class="c"><code>null</code></td><td><code>quantifier=="count"</code>일 때 필수(≥1)</td></tr>
       <tr><td><code>notify</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"default"</code></td><td><code>notify</code> 맵의 채널 이름</td></tr>
+      <tr><td><code>enabled</code></td><td>bool</td><td class="c opt">선택</td><td class="c"><code>true</code></td><td>이 rule 켜고 끄기. <code>false</code>면 엔진이 평가 스킵 + 스케줄 cadence에서 제외(profile.enabled와 별개)</td></tr>
     </tbody>
   </table>
 
@@ -540,6 +541,37 @@
     { <span class="tok-key">"fact"</span>: <span class="tok-str">"mem_size.growth_rate"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>,       <span class="tok-key">"value"</span>: <span class="tok-num">52428800</span> }
   ] }</pre>
   <p class="opt">읽는 법: <code>trend==</code>만 <code>value</code>가 <b>문자열</b>(<code>"increasing"</code>). "증가 추세 <b>그리고</b> 시간당 50MB(52428800 byte) 초과 증가"면 누수로 판단.</p>
+
+  <h4>⑧ AND·OR 혼합 — 한 rule로는 불가, rule을 나눠서 표현</h4>
+  <div class="note danger"><span class="tag">❌ 한 rule 안에서 섞기 불가</span> <code>combine</code>은 <b>rule 하나당 값 하나</b>(<code>AND</code> 또는 <code>OR</code>)이고 그 rule의 <b>모든 조건에 똑같이</b> 적용됩니다. 조건별 그룹·괄호·중첩이 없으므로 <code>(A AND B) OR C</code> 같은 혼합식은 rule 하나로 못 만듭니다.</div>
+  <p>대신 식을 <b>"AND 묶음들의 OR"(DNF)</b>로 바꾼 뒤 <b>AND 묶음 하나 = rule 하나</b>로 나눕니다. 같은 <code>notify</code> 채널을 공유하는 rule들은 한 사건으로 묶이므로 <b>rule 간 OR</b>처럼 동작합니다.</p>
+<pre><span class="tok-com">// 원하는 논리: (cpu.p95 &gt; 80  그리고  cpu.spike_count &gt; 5)  또는  (cpu.avg &gt;= 95)</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_anomaly"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"AND"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.p95"</span>,         <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.spike_count"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">5</span> }
+  ] },                                          <span class="tok-com">// ← AND 묶음 = rule A</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_avg_crit"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.avg"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span> } ] }  <span class="tok-com">// ← 단독 조건 = rule B</span></pre>
+  <p class="opt">읽는 법: rule A가 참이거나 rule B가 참이면 경보. A의 두 조건은 AND로, A·B 사이는 rule 분리로 OR. <code>(A OR B) AND C</code>처럼 OR이 안쪽이어도 분배법칙으로 <code>(A AND C) OR (B AND C)</code>로 풀어 rule 2개로 만듭니다.</p>
+  <div class="note warn"><span class="tag">⚠️ 반대 방향은 불가</span> 이 방식은 <b>OR</b>(어느 묶음이라도 참 → 경보)에만 통합니다. "여러 rule이 <b>동시에</b> 참일 때만 경보"하는 <b>rule 간 AND</b>는 표현할 수 없습니다 — rule은 각자 따로 발화하기 때문입니다. 동시 충족이 필요하면 그 조건들을 <b>한 rule에 <code>combine:"AND"</code></b>로 넣으세요(단, 모든 조건이 같은 <code>proc</code> 차원 measure 참조 — <a href="#s9">검증 8</a>).</div>
+
+  <h4>⑨ rule 끄고 켜기 — <code>enabled</code> (개별 on/off)</h4>
+  <p>rule 하나만 잠깐 끄고 싶을 때(시끄러운 경보 뮤트·점검 시간대·새 rule을 비활성으로 먼저 등록) <code>enabled:false</code>를 씁니다. profile 전체 스위치(<code>profile.enabled</code>)와 <b>별개</b>로 rule마다 적용됩니다. 끈 rule은 저장·검증은 그대로 되지만 엔진이 평가하지 않고 스케줄에서도 빠집니다.</p>
+<pre><span class="tok-com">// 이 rule만 비활성 — 저장은 되지만 발화하지 않음</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"enabled"</span>: <span class="tok-bool">false</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] }</pre>
+  <p class="opt">읽는 법: 기본은 <code>true</code>(생략 가능). 끄려면 <code>"enabled": false</code>. 다시 켤 때 안전하도록 끈 rule도 참조 무결성은 그대로 검사합니다(<a href="#s9">§9</a>).</p>
+  <p><b>특정 장비에서만 상속 rule 끄기(소프트 tombstone)</b> — eqp overlay에서 같은 id의 rule을 <code>enabled:false</code>로 다시 적으면, cascade가 rule을 통째로 교체하므로 <b>그 장비에서만</b> 해당 rule이 꺼집니다(전역은 그대로).</p>
+<pre><span class="tok-com">// (*,*,*) 전역은 cpu_warn 켜짐. 아래 overlay 문서만 추가하면 EQP001에서만 뮤트</span>
+{
+  <span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"PHOTO"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"MODEL_A"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"EQP001"</span> },
+  <span class="tok-key">"rules"</span>: [
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"enabled"</span>: <span class="tok-bool">false</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] }
+  ]
+}</pre>
+  <p class="opt">읽는 법: 다른 장비는 전역 <code>cpu_warn</code>이 그대로 동작하고, EQP001만 이 rule이 꺼집니다. 상속 항목을 "통째로 삭제"하는 기능은 아직 없고(추후), 이 <code>enabled:false</code> 뮤트가 그 자리를 대신합니다(<a href="#s10">§10</a>).</p>
 
   <h3>왜 measure가 window, rule이 interval을 갖나</h3>
   <p>측정의 속성(얼마나 긴 구간을 보나)은 measure에, 판단의 속성(얼마나 자주 보나)은 rule에 둡니다. 같은 measure를 주기가 같은 여러 rule이 참조하면 엔진이 <b>한 번만 계산</b>해 공유합니다. 스케줄 단위는 <code>(process × interval)</code> 묶음입니다.</p>
@@ -631,6 +663,7 @@
     </tbody>
   </table>
   <div class="note"><span class="tag">왜 합성 후 검증?</span> 참조 무결성(5·6·7·8)은 overlay 한 장이 아니라 <b>합성된 effective profile</b>에 적용합니다. overlay 문서만 보면 <code>cpu_crit</code>이 참조하는 <code>cpu</code> measure가 없어 보여도, 전역과 합치면 존재하기 때문입니다(<a href="#s10">§10</a>). 구조 검증(1~4)과 <code>count_min≥1</code>·값 타입은 문서 단위로 즉시 검사합니다.</div>
+  <div class="note"><span class="tag">비활성 rule도 검증</span> <code>enabled:false</code>인 rule도 위 검증을 <b>그대로</b> 받습니다(엄격). 끈 상태로 깨진 참조를 저장해 둘 수는 없으며, 그래서 다시 켜는 순간 항상 안전합니다. 단 interval-scope(§6.4)만은 <b>활성 rule</b>만 따집니다 — 비활성 rule이 새 주기를 들여와도 스케줄되지 않으므로 저장은 허용하고, 그 rule을 켤 때 검사합니다.</div>
 </section>
 
 <!-- ================= §10 scope 상속 ================= -->
@@ -671,6 +704,7 @@
     <li>참조 무결성은 <b>합성된 effective profile</b>에서 검증합니다(<a href="#s9">§9</a>).</li>
   </ul>
   <div class="note danger"><span class="tag">❌ 절대 금지</span> 특정 장비 하나를 바꾸려고 <b>전역 설정을 통째로 복사</b>하지 마세요(함정 <a href="#s12">P9</a>). overlay엔 바꿀 measure/rule만 담고 나머지는 상속하게 둡니다 — 그래야 전역 변경이 자동 전파되고 드리프트가 없습니다.</div>
+  <div class="note"><span class="tag">소프트 tombstone</span> 상속된 rule을 특정 scope에서만 끄려면, overlay에서 같은 id의 rule을 <code>enabled:false</code>로 다시 적습니다("통째로 교체"라 enabled까지 교체됨). 상속 항목을 완전히 <b>삭제</b>하는 기능은 아직 없고(추후), 이 <code>enabled:false</code> 뮤트가 그 역할을 대신합니다(<a href="#s6">§6 예시 ⑨</a>).</div>
 </section>
 
 <!-- ================= §11 EARS 메트릭 카탈로그 ================= -->
@@ -880,7 +914,7 @@ window.__SCHEMA_GUIDE_COVERAGE = [
   "per_hour","per_day","above","below","high","low",
   // rule 전 필드
   "interval_minutes","severity","WARNING","CRITICAL","combine","AND","OR",
-  "when","fact","op","value","quantifier","count_min",
+  "when","fact","op","value","quantifier","count_min","rule.enabled","소프트 tombstone",
   // 연산자 7 + 정량자 3
   ">=",">","<=","<","==","!=","trend==","any","all","count",
   // notify

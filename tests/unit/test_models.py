@@ -119,6 +119,24 @@ class TestMonitorProfileRoundtrip:
         restored = MonitorProfile.from_mongo(_make_profile().to_mongo())
         assert restored.id is None
 
+    def test_rule_enabled_roundtrips(self):
+        p = _make_profile(
+            rules=[Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                        enabled=False,
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])]
+        )
+        doc = p.to_mongo()
+        assert doc["rules"][0]["enabled"] is False
+        restored = MonitorProfile.from_mongo(doc)
+        assert restored.rules[0].enabled is False
+
+    def test_legacy_rule_without_enabled_defaults_true(self):
+        """Existing Mongo docs predate rule.enabled — loading must default True."""
+        doc = _make_profile().to_mongo()
+        doc["rules"][0].pop("enabled", None)  # simulate legacy document
+        restored = MonitorProfile.from_mongo(doc)
+        assert restored.rules[0].enabled is True
+
     def test_duplicate_measure_id_rejected(self):
         with pytest.raises(ValueError, match="duplicate measure id"):
             _make_profile(
@@ -151,6 +169,16 @@ class TestEffectiveSignature:
     def test_signature_changes_with_rules(self):
         a = _make_profile()
         b = _make_profile(rules=[])
+        assert a.effective_signature() != b.effective_signature()
+
+    def test_signature_changes_with_rule_enabled(self):
+        # toggling a rule's enabled changes behaviour → must change the bucket
+        a = _make_profile()
+        b = _make_profile(
+            rules=[Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                        enabled=False,
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])]
+        )
         assert a.effective_signature() != b.effective_signature()
 
     def test_structural_mongo_excludes_governance(self):
@@ -189,6 +217,22 @@ class TestCascadeFold:
         a = MonitorProfile(scope=Scope(process="*"), enabled=True)
         b = MonitorProfile(scope=Scope(process="P"), enabled=False)
         assert fold_profiles([a, b], b.scope).enabled is False
+
+    def test_overlay_disables_inherited_rule(self):
+        """Soft tombstone: an overlay re-declaring a rule id with enabled=False
+        mutes that rule for the narrower scope (whole-object replace)."""
+        glob = _make_profile(scope=Scope(process="*"))  # cpu_warn enabled
+        overlay = MonitorProfile(
+            scope=Scope(process="CVD", eqp_id="E1"),
+            rules=[
+                Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                     enabled=False,
+                     when=[Condition(fact="cpu.max", op=">=", value=80)])
+            ],
+        )
+        eff = fold_profiles([glob, overlay], overlay.scope)
+        warn = next(r for r in eff.rules if r.id == "cpu_warn")
+        assert warn.enabled is False
 
 
 class TestValidateEffective:
@@ -231,6 +275,17 @@ class TestValidateEffective:
                         when=[Condition(fact="cpu.max", op=">=", value=80)])]
         )
         assert any("exceeds measure 'cpu'.window_minutes" in e for e in validate_effective(p))
+
+    def test_disabled_rule_still_validated(self):
+        """Strict policy: a disabled rule is still reference-checked so that
+        re-enabling it later is always safe (broken ref rejected at write)."""
+        p = _make_profile(
+            rules=[Rule(id="r", interval_minutes=5, severity="WARNING",
+                        enabled=False,
+                        when=[Condition(fact="ghost.max", op=">=", value=1)])]
+        )
+        errs = validate_effective(p)
+        assert any("measure 'ghost' not found" in e for e in errs)
 
     def test_rule_spanning_differing_proc_rejected(self):
         # cpu (proc=@system) + proc_req (proc=*) in one AND rule → engine could
@@ -275,6 +330,19 @@ class TestLintEffective:
         )
         warns = lint_effective(p)
         assert any("cpu.avg" in w and "no rule" in w for w in warns)
+
+    def test_fact_referenced_only_by_disabled_rule_not_dead(self):
+        # strict policy: a disabled rule still "references" its fact, so the fact
+        # is not flagged dead (re-enabling the rule keeps it valid).
+        p = _make_profile(
+            measures=[
+                Measure(id="cpu", category="cpu", metric="total_used_pct",
+                        window_minutes=15, facts=[Fact(type="max")]),
+            ],
+            rules=[Rule(id="r", interval_minutes=5, severity="WARNING", enabled=False,
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
+        )
+        assert not any("cpu.max" in w and "no rule" in w for w in lint_effective(p))
 
     def test_gauge_with_delta_warned(self):
         # delta/growth_rate on a gauge metric is almost always a modeling mistake

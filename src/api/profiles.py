@@ -138,6 +138,10 @@ def _check_interval_scope(
     scheduled — a silent lost breach. Interval (cadence) is therefore overridable
     only down to the process level (thresholds/values may still be overridden per
     eqp). Global and process-level writes are exempt: they *are* what's scheduled.
+
+    Only *enabled* rules are considered on both sides: a disabled rule is never
+    scheduled (and never evaluated), so introducing one with a novel cadence is
+    harmless — the check re-runs and fires the moment that rule is enabled.
     """
     if overlay.scope.eqp_model == "*" and overlay.scope.eqp_id == "*":
         return
@@ -145,8 +149,10 @@ def _check_interval_scope(
         [d for d in parents if _rank(d.scope) <= 1], key=lambda p: _rank(p.scope)
     )
     process_eff = fold_profiles(process_docs, Scope(process=overlay.scope.process))
-    process_intervals = {r.interval_minutes for r in process_eff.rules}
-    extra = sorted({r.interval_minutes for r in effective.rules} - process_intervals)
+    process_intervals = {r.interval_minutes for r in process_eff.rules if r.enabled}
+    extra = sorted(
+        {r.interval_minutes for r in effective.rules if r.enabled} - process_intervals
+    )
     if extra:
         raise HTTPException(
             status_code=422,

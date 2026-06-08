@@ -90,7 +90,11 @@ class AnalysisEngine:
         for bucket in buckets.values():
             profile: MonitorProfile = bucket["profile"]
             eqp_ids: list[str] = bucket["eqp_ids"]
-            rules = [r for r in profile.rules if r.interval_minutes == interval_minutes]
+            rules = [
+                r
+                for r in profile.rules
+                if r.interval_minutes == interval_minutes and r.enabled
+            ]
             if not rules:
                 continue
             await self._evaluate_bucket(

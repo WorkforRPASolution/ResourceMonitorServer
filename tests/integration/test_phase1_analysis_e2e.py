@@ -256,6 +256,29 @@ async def test_below_threshold_silent(real_es, phase1_db, real_redis, ns, mock_e
 
 
 # ======================================================================
+# E3b — 비활성 rule(enabled=False)은 임계 초과여도 발화하지 않는다
+# ======================================================================
+async def test_disabled_rule_does_not_fire(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process, eqp_id = "E2E_DISABLED", "E2E-DISABLED-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 99.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    disabled_warn = Rule(id="cpu_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                         enabled=False,
+                         when=[Condition(fact="cpu.max", op=">=", value=80)])
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[disabled_warn]))
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert result.breaches == []  # 99 ≥ 80 이지만 rule이 꺼져 있어 평가 안 됨
+    assert mock_email_server["received"] == []
+
+
+# ======================================================================
 # E4 — cooldown 억제 + 5-dim 키 (실 Redis)
 # ======================================================================
 async def test_cooldown_suppresses_second_alert(real_es, phase1_db, real_redis, ns, mock_email_server):

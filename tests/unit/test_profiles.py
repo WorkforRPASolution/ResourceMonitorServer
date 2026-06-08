@@ -302,6 +302,75 @@ class TestItemCrud:
         assert r.status_code == 422
         repo.replace_with_version.assert_not_awaited()
 
+    def test_toggle_rule_enabled_via_patch(self, client, repo):
+        # disable a rule through the existing PATCH endpoint (whole-rule replace)
+        repo.find_by_scope.return_value = _overlay()
+        repo.collect_scope_docs.return_value = [_overlay()]
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "rule": {"id": "cpu_warn", "interval_minutes": 5, "severity": "WARNING",
+                     "enabled": False,
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 80}]},
+        }
+        r = client.patch("/profiles/rules/cpu_warn", json=body)
+        assert r.status_code == 200
+        repo.replace_with_version.assert_awaited_once()
+
+    def test_disabled_rule_with_broken_ref_still_422(self, client, repo):
+        # strict policy: a disabled rule is still reference-validated at write time
+        repo.find_by_scope.return_value = _overlay()
+        repo.collect_scope_docs.return_value = [_overlay()]
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "rule": {"id": "ghost_rule", "interval_minutes": 5, "severity": "WARNING",
+                     "enabled": False,
+                     "when": [{"fact": "ghost.max", "op": ">=", "value": 1}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 422
+        repo.replace_with_version.assert_not_awaited()
+
+    def test_model_overlay_disabled_new_interval_allowed(self, client, repo):
+        # a DISABLED rule introducing a new cadence is never scheduled, so it is
+        # allowed to be stored (the §6.4 check fires when it is enabled).
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "cpu_fast", "interval_minutes": 7, "severity": "CRITICAL",
+                     "enabled": False,
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 200
+        repo.replace_with_version.assert_awaited_once()
+
+    def test_disabled_process_rule_interval_not_schedulable(self, client, repo):
+        # a DISABLED process-level rule at interval 9 is never scheduled, so it
+        # does NOT make interval 9 available to deeper scopes; an eqp overlay
+        # adding an ENABLED rule at 9 must be rejected (silent lost breach).
+        process_doc = MonitorProfile(
+            scope=Scope(process="CVD"),
+            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                              window_minutes=15, facts=[Fact(type="max")])],
+            rules=[Rule(id="cpu_off", interval_minutes=9, severity="WARNING",
+                        enabled=False,
+                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
+            notify={"default": NotifyChannel(cooldown_minutes=30)},
+        )
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [process_doc, model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "cpu_fast", "interval_minutes": 9, "severity": "CRITICAL",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 422
+        repo.replace_with_version.assert_not_awaited()
+
     def test_model_overlay_existing_interval_ok(self, client, repo):
         # same cadence as the process-level schedule → allowed
         model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])

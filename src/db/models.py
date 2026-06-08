@@ -293,7 +293,16 @@ class Condition(BaseModel):
 
 
 class Rule(BaseModel):
-    """When to alert — references facts, owns the evaluation interval."""
+    """When to alert — references facts, owns the evaluation interval.
+
+    ``enabled`` (default True) is a per-rule on/off switch, independent of the
+    document-level ``MonitorProfile.enabled``. A disabled rule is still stored
+    and reference-validated (so re-enabling it is always safe), but the engine
+    skips it at evaluation time and the scheduler drops its interval from the
+    job cadence. In a narrower-scope overlay, re-declaring an inherited rule id
+    with ``enabled=False`` mutes that rule for the scope (a soft tombstone —
+    SCHEMA §6.2), since cascade fold replaces the whole rule object by id.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -303,6 +312,7 @@ class Rule(BaseModel):
     combine: Combine = "AND"
     when: list[Condition]
     notify: str = "default"
+    enabled: bool = True
 
     @model_validator(mode="after")
     def _nonempty(self) -> Rule:

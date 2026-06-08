@@ -221,6 +221,38 @@ class TestGetSchedulingIntervals:
         repo = ProfileRepository(mock_collection)
         assert await repo.get_scheduling_intervals("NOPE") == []
 
+    async def test_projection_includes_rule_enabled(self, mock_collection):
+        # the real query must fetch rules.enabled so disabled rules can be filtered
+        mock_collection.find = MagicMock(return_value=_cursor([]))
+        repo = ProfileRepository(mock_collection)
+        await repo.get_scheduling_intervals("CVD")
+        projection = mock_collection.find.call_args.args[1]
+        assert projection.get("rules.enabled") == 1
+
+    async def test_disabled_rule_interval_excluded(self, mock_collection):
+        # interval 10 is used ONLY by a disabled rule → no job should be scheduled
+        # for it; interval 5 (enabled) stays.
+        glob = _make_profile(
+            process="*", eqp_model="*", eqp_id="*",
+            rules=[
+                Rule(id="g5", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=80)]),
+                Rule(id="g10", interval_minutes=10, severity="WARNING", enabled=False,
+                     when=[Condition(fact="cpu.max", op=">=", value=70)]),
+            ],
+        )
+        mock_collection.find = MagicMock(return_value=_cursor([_doc(glob)]))
+        repo = ProfileRepository(mock_collection)
+        assert await repo.get_scheduling_intervals("CVD") == [5]
+
+    async def test_legacy_rule_without_enabled_counts(self, mock_collection):
+        # a pre-existing doc whose rule has no enabled field → treated as enabled
+        doc = _doc(_make_profile(process="*"))
+        doc["rules"][0].pop("enabled", None)
+        mock_collection.find = MagicMock(return_value=_cursor([doc]))
+        repo = ProfileRepository(mock_collection)
+        assert await repo.get_scheduling_intervals("CVD") == [5]
+
 
 class TestUpsert:
     async def test_uses_exact_filter_and_clears_cache(self, mock_collection):

@@ -54,6 +54,11 @@ class TestDefaultProfile:
             for f in m.facts:
                 assert fc.is_implemented(f.type), f"{m.id}.{f.type} is not Phase 1"
 
+    def test_all_default_rules_enabled(self):
+        """Seeded rules ship enabled; operators disable individually as needed."""
+        for r in build_default_profile().rules:
+            assert r.enabled is True, f"rule {r.id} should default enabled"
+
 
 class TestSeedDefaultProfile:
     async def test_upserts_when_no_existing(self, repo, mock_collection):

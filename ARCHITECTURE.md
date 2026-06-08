@@ -192,13 +192,13 @@ SEVERITY: WARNING, CRITICAL  (rule이 소유)
 기준정보를 **단일 컬렉션** `RESOURCE_MONITOR_PROFILE`(scope당 문서 1개)에 3계층으로 둡니다(구설계의 `RESOURCE_MONITOR_RULE` 2분할은 폐기):
 
 - **measures[]** (잰다) — `{id, category, metric, proc, window_minutes, facts[]}`. 무엇을·어떻게 ES에서 집계해 어떤 **fact**를 산출할지. 주기(interval)는 갖지 않음(집계창 window만).
-- **rules[]** (판단 + 주기) — `{id, interval_minutes, severity, combine, when[], notify}`. `when[].fact = "measureId.type"` 로 measure의 fact를 참조. **단순 임계값 = 조건 1개 rule, 복합 = 조건 여러 개 rule** (단일/복합을 컬렉션으로 가르지 않음).
+- **rules[]** (판단 + 주기) — `{id, interval_minutes, severity, combine, when[], notify, enabled}`. `when[].fact = "measureId.type"` 로 measure의 fact를 참조. **단순 임계값 = 조건 1개 rule, 복합 = 조건 여러 개 rule** (단일/복합을 컬렉션으로 가르지 않음). `enabled`(기본 true)는 rule 개별 on/off — `false`면 엔진 평가·스케줄 cadence에서 제외(문서 레벨 `enabled`와 별개).
 - **notify{}** (알린다) — 이름→`{cooldown_minutes, email_code, email_subcode?}` 맵. rule이 이름으로 참조.
 
 핵심 규칙:
 - **1 measure 항목 = 1 fact = 1 type.** `type` 이름이 곧 fact 이름(`max`/`min`/`avg`/`last`/`p50`·`p90`·`p95`·`p99`/`spike_count`/`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`). 한 measure 내 type 유일. type 카탈로그는 닫힌 enum(`src/analyzer/fact_catalog.py`). Phase 1(`max`~`spike_count`)은 엔진 평가, Phase 2/3은 스키마 수용·엔진 skip.
 - **경보 방향**은 rule의 op로 표현(높을때 `>=`, 낮을때 `<=`, 범위이탈 두 조건 OR, 상태 `==`). `state_check`은 별도 type 없이 `min`/`max`로 흡수.
-- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay), `enabled`는 AND fold. [SCHEMA.md §6](SCHEMA.md).
+- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay), 문서 `enabled`는 AND fold. 구체 scope에서 같은 `rule.id`를 `enabled:false`로 덮으면 그 scope에서만 rule이 꺼진다(소프트 tombstone — 상속 항목 완전 삭제는 추후). [SCHEMA.md §6](SCHEMA.md).
 
 ### v2 평가 흐름 (as-built)
 

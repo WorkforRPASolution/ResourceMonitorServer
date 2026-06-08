@@ -162,6 +162,37 @@ class TestEdgeCases:
         assert result.breaches == []
         deps.es.client.search.assert_not_awaited()
 
+    async def test_disabled_rule_skipped(self):
+        # the only rule at this interval is disabled → no evaluation, no email,
+        # and the measure it references is never queried (rules filtered first).
+        profile = _cpu_profile(rules=[
+            Rule(id="cpu_warn", interval_minutes=5, severity="WARNING", enabled=False,
+                 when=[Condition(fact="cpu.max", op=">=", value=80)]),
+        ])
+        deps = _make_deps(profile)
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 99.0))
+        result = await _engine(deps).run_analysis("CVD", 5)
+        assert result.breaches == []
+        assert result.rule_ids == []
+        deps.email_client.send_alert.assert_not_awaited()
+        deps.es.client.search.assert_not_awaited()
+
+    async def test_disabled_rule_skipped_among_enabled(self):
+        # two rules at the SAME interval: warn enabled, crit disabled. value 99
+        # crosses both thresholds, but only the enabled WARNING may fire — the
+        # disabled rule must be dropped from the (non-empty) rule set.
+        profile = _cpu_profile(rules=[
+            Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=80)]),
+            Rule(id="cpu_crit", interval_minutes=5, severity="CRITICAL", enabled=False,
+                 when=[Condition(fact="cpu.max", op=">=", value=95)]),
+        ])
+        deps = _make_deps(profile)
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 99.0))
+        result = await _engine(deps).run_analysis("CVD", 5)
+        assert result.rule_ids == ["cpu_warn"]
+        assert {b.severity for b in result.breaches} == {"WARNING"}
+
     async def test_phase2_fact_skipped(self):
         prof = MonitorProfile(
             scope=Scope(process="*"),
