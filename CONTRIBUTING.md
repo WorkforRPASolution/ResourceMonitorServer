@@ -84,7 +84,7 @@ make test-watch          # ptw (파일 변경 감지, 자동 재실행)
 
 ```bash
 .venv/bin/python -m pytest tests/unit/test_partition_manager.py -v
-.venv/bin/python -m pytest tests/unit/test_partition_manager.py::test_apply_assignment_stale -v
+.venv/bin/python -m pytest tests/unit/test_partition_manager.py::TestApplyAssignmentStaleDefense::test_higher_epoch_wins -v
 .venv/bin/python -m pytest -k "leader and not lost" -v
 ```
 
@@ -140,7 +140,7 @@ make test-e2e    # dev-up 의존 — 5개 시나리오, ~4분
 
 **Subprocess 수명**: `Popen` 으로 띄우고 SIGTERM → `wait(timeout=15)` → SIGKILL. 각 subprocess 의 stdout/stderr 는 `tmp_path/<instance_id>.log` 로 캡처되어 assertion 실패 시 `dump_log_tail()` 로 출력됨.
 
-### 3.3 커버리지
+### 3.5 커버리지
 
 ```bash
 .venv/bin/python -m pytest tests/unit --cov=src --cov-report=term-missing
@@ -280,7 +280,7 @@ feat(distributed): add LeaderElection.restart_after_loss
 LOST 후 옛 Election 객체는 죽은 세션에 묶여 재사용 불가.
 새 Election을 만들어 fire-and-forget으로 다시 schedule.
 
-회귀 가드: tests/unit/test_leader_election.py::test_restart_after_loss
+회귀 가드: tests/unit/test_leader_election.py::TestRestartAfterLoss::test_restart_creates_new_election_object
 ```
 
 ```
@@ -312,11 +312,13 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 ### 8.4 Analysis Engine (Phase 1)
 
-- Threshold 미동작? → (1) metric_pattern 와일드카드가 ES 인덱스의 실제 필드에 매칭되는지 확인, (2) `get_numeric_field_names()` 캐시가 빈 리스트를 반환하는지 (자정 인덱스 롤), (3) `agg_type` 이 올바른지 (`state_check` vs `max`).
-- 이메일 미발송? → (1) `is_cooling_down_batch` 결과 확인, (2) `email_client.send_alert` 반환값, (3) Akka `EMAIL_TEMPLATE_REPOSITORY` 에 `code=RESOURCE_MONITOR`, `sub_code=CPU_WARNING` 등 템플릿 등록 여부.
-- State check breach: `required` 필드 min=0 → breach (프로세스 다운), `forbidden` 필드 max>0 → breach (금지 프로세스 실행).
+> 🟢 아래는 **현재 코드(v2: 단일 `RESOURCE_MONITOR_PROFILE` 컬렉션의 measures/rules/notify + scope cascade, 엔진 per-eqp 해석)** 기준 팁입니다. 권위 스펙은 [SCHEMA.md](SCHEMA.md) / [ARCHITECTURE.md §2.2](ARCHITECTURE.md) 참고.
+
+- Rule 미동작? → (1) `measure.metric` 와일드카드가 `resolve_metric_patterns()` × `ESClient.get_metric_names()` (EARS_METRIC terms 집계) 가 반환한 실제 인스턴스 이름에 매칭되는지 확인, (2) `get_metric_names()` 가 빈 리스트를 반환하는지 (자정 인덱스 롤 → negative 캐시), (3) `fact.type` 이 올바른 `FactType` enum 값인지, 그리고 Phase 2/3 fact 면 엔진이 skip 한다는 점 (`fact_phase_not_implemented` 경고 확인 — `fact_catalog.is_implemented`).
+- 이메일 미발송? → (1) `is_cooling_down_batch` 결과 확인, (2) `email_client.send_alert` 반환값, (3) Akka `EMAIL_TEMPLATE_REPOSITORY` 에 `code=notify.email_code`, `sub_code=notify.email_subcode` (없으면 `{CATEGORY}_{SEVERITY}`) 템플릿 등록 여부.
+- State check breach: 별도 type/함수 없이 `min`/`max` + op 조건으로 흡수 — `required` 다운은 `min == 0`, `forbidden` 실행은 `max > 0`, health 는 `max >= 2` (SCHEMA.md §2).
 - `_es_semaphore` 는 인스턴스당 동시 ES 쿼리를 3개로 제한. ES 과부하 방지.
-- Process filter 누락 의심 시: `build_metric_aggregation_query` 에 `process` 파라미터가 전달되는지 확인. 인덱스 명으로 이미 분리되지만 방어적 필터도 존재.
+- Per-eqp 해석 누락 의심 시: 엔진은 장비별로 `resolve_profile(process, eqpModel, eqpId)` 후 `effective_signature()` 로 버킷팅한다 — model/eqp 오버레이가 무시되면 과거 process 레벨만 resolve 하던 dead-path 회귀 의심 (통합테스트 E7 가드 확인).
 
 ### 8.5 Debug Read-Only 모드
 
@@ -329,8 +331,7 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 | 위치 | 차단 내용 | 가드 |
 |------|----------|------|
-| `src/startup/repos.py` | `create_index(uniq_scope)` | `if not settings.debug_read_only` |
-| `src/main.py` lifespan | `seed_default_profile` 스킵 | phase skip |
+| `src/startup/repos.py` | `create_collection` + `create_index(uniq_scope)` 스킵 (빈 컬렉션도 안 만듦 → `scripts/create-profile-collection.ps1` 로 수동) | `if not settings.debug_read_only` |
 | `src/main.py` lifespan | `init_distributed` (ZK 참여) 스킵 | phase skip |
 | `src/main.py` lifespan | `leader_election.start` / `partition_manager.start` 스킵 | phase skip |
 | `src/startup/infra.py` | `ZKClient.connect()` 스킵 — `infra.zk = None` 유지 | `if settings.debug_read_only` |
@@ -362,7 +363,7 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 - `tests/unit/test_cooldown.py::TestDebugReadOnlyGuard`
 - `tests/unit/test_email_client.py::TestDebugReadOnlyGuard`
 - `tests/unit/test_scheduler_jobs.py::TestDebugProcessesResolution`
-- `tests/integration/test_lifespan_real.py::test_debug_lifespan_*` (6 tests)
+- `tests/integration/test_lifespan_real.py::test_debug_lifespan_*` (3 tests)
 
 ---
 
@@ -370,7 +371,7 @@ fix(alert): Akka /EmailNotify result는 lowercase 'success'
 
 PR 보내기 전에:
 
-- [ ] `make test-fast` 통과 (376 tests baseline — unit only)
+- [ ] `make test-fast` 통과 (517 tests baseline — unit only)
 - [ ] `make lint` 통과
 - [ ] 새 코드의 모든 분기에 테스트 있음
 - [ ] 분산 변경은 LOST/SUSPENDED 경로도 테스트했는가?
@@ -378,7 +379,7 @@ PR 보내기 전에:
 - [ ] 새 메트릭은 [ARCHITECTURE.md 8장](ARCHITECTURE.md#8-메트릭--관측) 에도 추가했는가?
 - [ ] critical gotcha를 새로 발견했다면 [ARCHITECTURE.md G section](ARCHITECTURE.md#4-critical-gotchas--pitfalls) 갱신했는가?
 - [ ] 분석 로직 변경 시 threshold/alert_builder/es_parser 테스트 업데이트했는가?
-- [ ] 새 메트릭 카테고리 추가 시 `classify_metric_category()` + `constants.py` ALERT_CATEGORY_* 갱신했는가?
+- [ ] breach 의 category 는 `measure.category` 에서 직결된다 (heuristic `classify_metric_category()` 없음) — 새 카테고리는 measure 문서에 적고, alert_builder/es_parser 테스트만 갱신했는가?
 
 ---
 
@@ -388,7 +389,8 @@ PR 보내기 전에:
 |------|------|
 | [README.md](README.md) | 개요, 빠른 시작, 디렉토리 맵 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 시스템 설계, 분산 조정, **Gotchas** |
-| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 (PROFILE, EQP_INFO 등) |
+| [SCHEMA.md](SCHEMA.md) | EARS DB 컬렉션 스키마 — **v2: 단일 PROFILE(measures/rules/notify) + cascade** (권위 스펙) |
+| [docs/ADMIN-UI-LEGIBILITY.md](docs/ADMIN-UI-LEGIBILITY.md) | 관리 UI / 시인성 설계 |
 | [PRD_Phase0_Foundation.md](PRD_Phase0_Foundation.md) | Phase 0 요구사항 |
 | [docs/archive/phase0-plan-v6.md](docs/archive/phase0-plan-v6.md) | Phase 0 v6 구현 계획 (완료 보관용) |
 | `/Users/hyunkyungmin/Developer/ARS/CLAUDE.md` | 상위 워크플로우 정책 |

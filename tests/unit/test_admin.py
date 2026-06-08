@@ -66,11 +66,31 @@ class TestAdminStatus:
 class TestAdminCooldownClear:
     def test_clear_cooldown(self, app):
         with TestClient(app) as client:
-            r = client.delete("/admin/cooldowns/E1/cpu/total_used_pct")
+            r = client.delete(
+                "/admin/cooldowns",
+                params={
+                    "process": "CVD", "eqp_id": "E1", "proc": "@system",
+                    "notify": "default", "severity": "WARNING",
+                },
+            )
         assert r.status_code == 200
-        assert "cleared" in r.json()
+        assert r.json()["cleared"] == "CVD:E1:@system:default:WARNING"
         app.state.cooldown_manager.clear_cooldown.assert_awaited_once_with(
-            "E1", "cpu", "total_used_pct"
+            "CVD", "E1", "@system", "default", "WARNING"
+        )
+
+    def test_clear_cooldown_proc_defaults_system(self, app):
+        with TestClient(app) as client:
+            r = client.delete(
+                "/admin/cooldowns",
+                params={
+                    "process": "CVD", "eqp_id": "E1",
+                    "notify": "default", "severity": "CRITICAL",
+                },
+            )
+        assert r.status_code == 200
+        app.state.cooldown_manager.clear_cooldown.assert_awaited_once_with(
+            "CVD", "E1", "@system", "default", "CRITICAL"
         )
 
 

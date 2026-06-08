@@ -1,4 +1,4 @@
-"""Tests for src.es.queries — pure logic (index range + query builders)."""
+"""Tests for src.es.queries — index range + v2 EARS_* aggregation builders."""
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -6,7 +6,10 @@ import pytest
 import time_machine
 
 from src.config.settings import AppSettings
+from src.db.models import Fact
 from src.es.queries import QueryBuilder
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -14,154 +17,145 @@ def qb() -> QueryBuilder:
     return QueryBuilder(AppSettings(local_tz="Asia/Seoul"))
 
 
-@pytest.mark.unit
+NOW = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+
+def _terms(filters, field):
+    """Return the value of the first term/terms filter on `field`, or None."""
+    for f in filters:
+        if "term" in f and field in f["term"]:
+            return f["term"][field]
+        if "terms" in f and field in f["terms"]:
+            return f["terms"][field]
+    return None
+
+
 class TestResolveIndexRange:
     def test_within_single_day_returns_one_index(self, qb):
-        """If start and end fall on the same day, return a single index pattern."""
-        # 2026-04-07 12:00 KST, 5 minute window → start 11:55
-        with time_machine.travel(
-            datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        ):
-            result = qb.resolve_index_range("CVD", time_range_minutes=5)
-        assert result == "cvd_all-2026.04.07"
+        with time_machine.travel(NOW):
+            assert qb.resolve_index_range("CVD", 5) == "cvd_all-2026.04.07"
 
-    def test_crosses_midnight_returns_two_indexes(self, qb):
-        """If window crosses midnight, return both days as comma-separated pattern."""
-        # 2026-04-07 00:02 KST, 5 minute window → start 2026-04-06 23:57
+    def test_crosses_utc_midnight_returns_two_indexes(self, qb):
+        # window straddles UTC midnight → both UTC days (indices roll over on UTC)
         with time_machine.travel(
-            datetime(2026, 4, 7, 0, 2, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+            datetime(2026, 4, 7, 0, 2, 0, tzinfo=ZoneInfo("UTC"))
         ):
-            result = qb.resolve_index_range("CVD", time_range_minutes=5)
-        assert result == "cvd_all-2026.04.06,cvd_all-2026.04.07"
+            assert qb.resolve_index_range("CVD", 5) == (
+                "cvd_all-2026.04.06,cvd_all-2026.04.07"
+            )
 
     def test_process_is_lowercased(self, qb):
-        with time_machine.travel(
-            datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        ):
-            result = qb.resolve_index_range("ETCH", time_range_minutes=5)
-        assert result == "etch_all-2026.04.07"
+        with time_machine.travel(NOW):
+            assert qb.resolve_index_range("ETCH", 5) == "etch_all-2026.04.07"
 
-    def test_respects_configured_timezone(self):
-        """Index date must be computed in the configured local timezone, not UTC."""
-        # 2026-04-07 00:30 KST == 2026-04-06 15:30 UTC
-        # If we used UTC, we'd pick "2026.04.06" — but local_tz=Asia/Seoul means 04.07
-        qb = QueryBuilder(AppSettings(local_tz="Asia/Seoul"))
-        with time_machine.travel(
-            datetime(2026, 4, 6, 15, 30, 0, tzinfo=ZoneInfo("UTC"))
-        ):
-            result = qb.resolve_index_range("CVD", time_range_minutes=5)
-        # Start: 00:25 KST, end: 00:30 KST → same day (2026-04-07)
-        assert result == "cvd_all-2026.04.07"
+    def test_index_date_uses_utc_not_local_tz(self, qb):
+        # PROD bug guard: daily indices roll over on the UTC calendar (verified:
+        # {proc}_all-YYYY.MM.DD holds EARS_TIMESTAMP 00:00:00Z–23:59:59Z). At UTC
+        # 15:30 (= KST 00:30 next day) the data lives in the UTC-date index. qb is
+        # built with local_tz="Asia/Seoul" to prove the local tz never leaks into
+        # the index date (else KST 00:00–09:00 → wrong/empty index → blind).
+        with time_machine.travel(datetime(2026, 4, 6, 15, 30, 0, tzinfo=ZoneInfo("UTC"))):
+            assert qb.resolve_index_range("CVD", 5) == "cvd_all-2026.04.06"
 
-    def test_long_window_still_just_two_days(self, qb):
-        """Even with a 120 min window crossing midnight, we return two days."""
-        with time_machine.travel(
-            datetime(2026, 4, 7, 0, 30, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        ):
-            result = qb.resolve_index_range("CVD", time_range_minutes=120)
-        assert result == "cvd_all-2026.04.06,cvd_all-2026.04.07"
+    def test_accepts_explicit_utc_now(self, qb):
+        # engine passes its own UTC `now` so the index date and the
+        # EARS_TIMESTAMP range filter share a single clock.
+        now = datetime(2026, 4, 6, 15, 30, 0, tzinfo=ZoneInfo("UTC"))
+        assert qb.resolve_index_range("CVD", 5, now=now) == "cvd_all-2026.04.06"
 
 
-@pytest.mark.unit
-class TestBuildTimeRangeQuery:
-    def test_range_filter_structure(self, qb):
-        """build_time_range_filter returns an ES range filter on @timestamp."""
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        filter_ = qb.build_time_range_filter(now, window_minutes=5)
-        assert "range" in filter_
-        assert "@timestamp" in filter_["range"]
-        assert "gte" in filter_["range"]["@timestamp"]
-        assert "lte" in filter_["range"]["@timestamp"]
-
-    def test_window_minutes_applied(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        filter_ = qb.build_time_range_filter(now, window_minutes=5)
-        gte = filter_["range"]["@timestamp"]["gte"]
-        lte = filter_["range"]["@timestamp"]["lte"]
-        # gte should be 5 minutes earlier than lte
-        assert "11:55" in gte
-        assert "12:00" in lte
+class TestBuildTimeRangeFilter:
+    def test_range_filter_on_ears_timestamp(self, qb):
+        f = qb.build_time_range_filter(NOW, window_minutes=5)
+        assert "EARS_TIMESTAMP" in f["range"]
+        assert "11:55" in f["range"]["EARS_TIMESTAMP"]["gte"]
+        assert "12:00" in f["range"]["EARS_TIMESTAMP"]["lte"]
 
 
-# ----------------------------------------------------------------------
-# Phase 1: build_metric_aggregation_query
-# ----------------------------------------------------------------------
-@pytest.mark.unit
 class TestBuildMetricAggregationQuery:
-    def test_size_is_zero(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=["total_used_pct"]
-        )
+    def _q(self, qb, **over):
+        params = {
+            "window_minutes": 15,
+            "category": "cpu",
+            "metrics": ["total_used_pct"],
+            "proc": "@system",
+            "facts": [Fact(type="max")],
+        }
+        params.update(over)
+        return qb.build_metric_aggregation_query(NOW, **params)
+
+    def test_size_zero_and_terms_on_eqp(self, qb):
+        body = self._q(qb)
         assert body["size"] == 0
-
-    def test_has_time_range_filter(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=["total_used_pct"]
-        )
-        filters = body["query"]["bool"]["filter"]
-        assert any("range" in f for f in filters)
-
-    def test_terms_on_eqp_id_with_size_30000(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=["total_used_pct"]
-        )
         by_eqp = body["aggs"]["by_eqp"]
-        assert by_eqp["terms"]["field"] == "eqpId.keyword"
+        assert by_eqp["terms"]["field"] == "EARS_EQPID.keyword"
         assert by_eqp["terms"]["size"] == 30000
 
-    def test_default_agg_type_is_max(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=["total_used_pct"]
-        )
-        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
-        assert "total_used_pct_max" in sub_aggs
-        assert sub_aggs["total_used_pct_max"] == {"max": {"field": "total_used_pct"}}
+    def test_category_and_metric_and_time_filters(self, qb):
+        filters = self._q(qb)["query"]["bool"]["filter"]
+        assert _terms(filters, "EARS_CATEGORY.keyword") == "cpu"
+        assert _terms(filters, "EARS_METRIC.keyword") == ["total_used_pct"]
+        assert any("range" in f and "EARS_TIMESTAMP" in f["range"] for f in filters)
 
-    def test_custom_agg_types(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10,
-            metric_fields=["required", "forbidden", "total_used_pct"],
-            agg_types={"required": "min", "forbidden": "max", "total_used_pct": "avg"},
-        )
-        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
-        assert sub_aggs["required_min"] == {"min": {"field": "required"}}
-        assert sub_aggs["forbidden_max"] == {"max": {"field": "forbidden"}}
-        assert sub_aggs["total_used_pct_avg"] == {"avg": {"field": "total_used_pct"}}
+    def test_proc_filter_when_concrete(self, qb):
+        filters = self._q(qb, proc="@system")["query"]["bool"]["filter"]
+        assert _terms(filters, "EARS_PROCNAME.keyword") == "@system"
 
-    def test_multiple_metrics(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=5,
-            metric_fields=["cpu0_core_load", "cpu1_core_load"],
-        )
-        sub_aggs = body["aggs"]["by_eqp"]["aggs"]
-        assert "cpu0_core_load_max" in sub_aggs
-        assert "cpu1_core_load_max" in sub_aggs
+    def test_max_subagg_over_ears_value(self, qb):
+        leaf = self._q(qb)["aggs"]["by_eqp"]["aggs"]
+        assert leaf["max"] == {"max": {"field": "EARS_VALUE"}}
 
-    def test_empty_metric_fields_still_valid(self, qb):
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=[]
-        )
-        assert body["size"] == 0
-        assert body["aggs"]["by_eqp"]["aggs"] == {}
+    def test_percentile_subagg(self, qb):
+        leaf = self._q(qb, facts=[Fact(type="p95")])["aggs"]["by_eqp"]["aggs"]
+        assert leaf["p95"]["percentiles"]["field"] == "EARS_VALUE"
+        assert leaf["p95"]["percentiles"]["percents"] == [95.0]
 
-    def test_includes_process_filter(self, qb):
-        """ES query must filter by process even though the index is per-process."""
-        now = datetime(2026, 4, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        body = qb.build_metric_aggregation_query(
-            now, window_minutes=10, metric_fields=["total_used_pct"],
-            process="CVD",
-        )
+    def test_spike_count_filter_range_above(self, qb):
+        facts = [Fact(type="spike_count", over=90, direction="above")]
+        leaf = self._q(qb, facts=facts)["aggs"]["by_eqp"]["aggs"]
+        assert leaf["spike_count"] == {
+            "filter": {"range": {"EARS_VALUE": {"gte": 90}}}
+        }
+
+    def test_spike_count_filter_range_below(self, qb):
+        facts = [Fact(type="spike_count", over=5, direction="below")]
+        leaf = self._q(qb, facts=facts)["aggs"]["by_eqp"]["aggs"]
+        assert leaf["spike_count"]["filter"]["range"]["EARS_VALUE"] == {"lte": 5}
+
+    def test_last_top_hits(self, qb):
+        leaf = self._q(qb, facts=[Fact(type="last")])["aggs"]["by_eqp"]["aggs"]
+        th = leaf["last"]["top_hits"]
+        assert th["size"] == 1
+        assert th["sort"] == [{"EARS_TIMESTAMP": {"order": "desc"}}]
+
+    def test_proc_wildcard_groups_by_procname(self, qb):
+        body = self._q(qb, proc="*")
+        by_eqp_aggs = body["aggs"]["by_eqp"]["aggs"]
+        assert "by_proc" in by_eqp_aggs
+        assert by_eqp_aggs["by_proc"]["terms"]["field"] == "EARS_PROCNAME.keyword"
+        # leaf facts live under by_proc, not directly under by_eqp
+        assert "max" in by_eqp_aggs["by_proc"]["aggs"]
+        # proc not term-filtered when wildcard
         filters = body["query"]["bool"]["filter"]
-        process_filters = [
-            f for f in filters
-            if "term" in f and "process.keyword" in f.get("term", {})
-        ]
-        assert len(process_filters) == 1
-        assert process_filters[0]["term"]["process.keyword"] == "CVD"
+        assert _terms(filters, "EARS_PROCNAME.keyword") is None
+
+    def test_expand_instance_groups_by_metric(self, qb):
+        body = self._q(
+            qb, metrics=["C", "D"], expand_instance=True, facts=[Fact(type="max")]
+        )
+        by_eqp_aggs = body["aggs"]["by_eqp"]["aggs"]
+        assert "by_metric" in by_eqp_aggs
+        assert by_eqp_aggs["by_metric"]["terms"]["field"] == "EARS_METRIC.keyword"
+        assert "max" in by_eqp_aggs["by_metric"]["aggs"]
+
+    def test_eqp_ids_restrict_filter(self, qb):
+        filters = self._q(qb, eqp_ids=["E1", "E2"])["query"]["bool"]["filter"]
+        assert _terms(filters, "EARS_EQPID.keyword") == ["E1", "E2"]
+
+    def test_keyword_suffix_configurable_to_bare(self):
+        # MONITOR_ES_KEYWORD_SUFFIX="" → bare 필드명(키워드 매핑 클러스터 대비 override)
+        bare_qb = QueryBuilder(AppSettings(es_keyword_suffix=""))
+        body = self._q(bare_qb)
+        assert body["aggs"]["by_eqp"]["terms"]["field"] == "EARS_EQPID"
+        filters = body["query"]["bool"]["filter"]
+        assert _terms(filters, "EARS_CATEGORY") == "cpu"

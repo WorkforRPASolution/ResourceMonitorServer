@@ -10,13 +10,12 @@ Boot sequence (each phase logged via ``startup_phase``):
     2. get_settings + setup_logging — full structlog
     3. init_infra                  — connect ES/Mongo/Redis/Email/ZK
     4. _verify_infra_versions      — warn if running against unexpected versions
-    5. init_repos                  — wrap Mongo collections in repositories
-    6. seed_default_profile        — hash-compare; idempotent
-    7. init_distributed            — leader/lock/partition_mgr/cooldown
-    8. init_scheduler              — APScheduler wrapper
-    9. partition_mgr.start         — register members + watches
-   10. leader_election.start       — fire-and-forget election thread
-   11. scheduler.start             — finally accept jobs
+    5. init_repos                  — create empty profile collection + index, wrap repos
+    6. init_distributed            — leader/lock/partition_mgr/cooldown
+    7. init_scheduler              — APScheduler wrapper
+    8. partition_mgr.start         — register members + watches
+    9. leader_election.start       — fire-and-forget election thread
+   10. scheduler.start             — finally accept jobs
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 
-from src.api import admin, health
+from src.api import admin, health, profiles
 from src.api.metrics import STARTUP_COMPLETE, render_metrics
 from src.cache.cooldown import AlertCooldownManager
 from src.config.constants import (
@@ -39,7 +38,6 @@ from src.config.constants import (
     SELF_ALERT_PROCESS,
 )
 from src.config.settings import get_settings
-from src.db.seed import seed_default_profile
 from src.distributed.lock import NoOpZKLock
 from src.logging_config import setup_logging, setup_logging_minimal
 from src.middleware import RequestIdMiddleware
@@ -71,16 +69,10 @@ async def lifespan(app: FastAPI):
             await _verify_infra_versions(infra)
 
         async with startup_phase("init_repos"):
+            # init_repos creates the EMPTY RESOURCE_MONITOR_PROFILE collection
+            # (+ uniq_scope index) if absent. Profile documents are inserted
+            # manually (JSON); startup does NOT seed a default profile.
             repos = await init_repos(infra, settings)
-
-        if not settings.debug_read_only:
-            async with startup_phase("seed_default_profile"):
-                await seed_default_profile(repos.profile_repo)
-        else:
-            logger.warning(
-                "debug_read_only_skip_phase",
-                phase="seed_default_profile",
-            )
 
         if not settings.debug_read_only:
             # Build the scheduler holder BEFORE init_distributed so the
@@ -175,7 +167,7 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "startup_complete_in_debug_read_only_mode",
                 skipped_phases=[
-                    "seed_default_profile",
+                    "schema_init (create_collection + uniq_scope index)",
                     "init_distributed",
                     "partition_manager_start",
                     "leader_election_start",
@@ -339,6 +331,7 @@ async def metrics() -> Response:
 
 app.include_router(health.router)
 app.include_router(admin.router)
+app.include_router(profiles.router)
 
 
 if __name__ == "__main__":

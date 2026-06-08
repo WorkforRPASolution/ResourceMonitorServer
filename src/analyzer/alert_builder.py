@@ -1,53 +1,31 @@
-"""Build EmailAlertRequest from analysis results."""
+"""Build EmailAlertRequest from v2 rule breaches.
+
+In v2 the alert category comes straight from the breach (``measure.category``),
+not from heuristic field-name sniffing — this fixes the latent cpu/memory
+``total_used_pct`` collision (P7). The email ``code``/``subcode`` come from the
+rule's resolved notify channel: ``code = notify.email_code`` and
+``subcode = notify.email_subcode or "{CATEGORY}_{SEVERITY}"``.
+"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
 from src.alert.models import EmailAlertRequest
-from src.config.constants import (
-    ALERT_CATEGORY_CPU,
-    ALERT_CATEGORY_DISK,
-    ALERT_CATEGORY_GPU,
-    ALERT_CATEGORY_MEMORY,
-    ALERT_CATEGORY_PROCESS_WATCH,
-    ALERT_CATEGORY_RESOURCE,
-    ALERT_CATEGORY_TEMPERATURE,
-    ALERT_CODE_RESOURCE_MONITOR,
-)
 from src.config.settings import AppSettings
 
 if TYPE_CHECKING:
     from src.analyzer.threshold import ThresholdBreach
+    from src.db.models import NotifyChannel
+
+# the cooldown key tuple shape, single source of truth shared with the engine
+# and AlertCooldownManager (process, eqpId, proc, notify, severity).
+CooldownKey = tuple[str, str, str, str, str]
 
 
-def classify_metric_category(metric_pattern: str, field_name: str) -> str:
-    """Map a metric pattern/field to an alert category for sub_code."""
-    # Process watch
-    if field_name in ("required", "forbidden"):
-        return ALERT_CATEGORY_PROCESS_WATCH
-
-    # GPU (check before CPU since gpu fields may contain _core_load)
-    lower = field_name.lower()
-    if lower.startswith("gpu") or metric_pattern.lower().startswith("gpu"):
-        return ALERT_CATEGORY_GPU
-
-    # CPU
-    if "core_load" in lower or field_name == "total_used_pct":
-        return ALERT_CATEGORY_CPU
-
-    # Memory
-    if lower.startswith("mem") or "mem_" in metric_pattern.lower():
-        return ALERT_CATEGORY_MEMORY
-
-    # Disk
-    if lower.startswith("disk") or "disk" in metric_pattern.lower():
-        return ALERT_CATEGORY_DISK
-
-    # Temperature
-    if "temp" in lower:
-        return ALERT_CATEGORY_TEMPERATURE
-
-    return ALERT_CATEGORY_RESOURCE
+def make_cooldown_key(process: str, breach: ThresholdBreach, notify_name: str) -> CooldownKey:
+    """Build the 5-tuple cooldown identity for a breach (matches the v2 Redis
+    key: ``{prefix}:cooldown:{process}:{eqp}:{proc}:{notify}:{severity}``)."""
+    return (process, breach.eqp_id, breach.proc, notify_name, breach.severity)
 
 
 def build_alert_request(
@@ -55,11 +33,12 @@ def build_alert_request(
     eqp_info: dict[str, Any],
     process: str,
     settings: AppSettings,
-    metric_pattern: str,
+    notify: NotifyChannel,
     window_minutes: int,
 ) -> EmailAlertRequest:
-    """Construct an EmailAlertRequest from a breach + equipment info."""
-    category = classify_metric_category(metric_pattern, breach.metric)
+    """Construct an EmailAlertRequest from a breach + equipment info + channel."""
+    category = breach.category.upper()
+    subcode = notify.email_subcode or f"{category}_{breach.severity}"
     grafana_url = ""
     if settings.grafana_base_url and settings.grafana_dashboard_uid:
         grafana_url = (
@@ -68,31 +47,24 @@ def build_alert_request(
         )
 
     return EmailAlertRequest(
-        hostname=eqp_info.get("localpc", ""),
+        # hostname=eqpId: Akka HttpWebServer는 EmailHttpDataFormat.hostname을
+        # eqpId로 취급(getEmailCategory/getSdwt가 EQP_INFO를 eqpId로 조회,
+        # @Hostname 치환·메일 제목). PRD §장비 ID 명세와 일치. localpc(PC명) 아님.
+        hostname=breach.eqp_id,
         ip=eqp_info.get("ipAddr", ""),
         app=settings.email_app_name,
         process=process,
         eqp_model=eqp_info.get("eqpModel", ""),
         line=eqp_info.get("line", ""),
-        code=ALERT_CODE_RESOURCE_MONITOR,
-        subcode=f"{category}_{breach.severity}",
+        code=notify.email_code,
+        subcode=subcode,
         variables={
             "Severity": breach.severity,
             "Category": category,
-            "MetricName": breach.metric,
+            "MetricName": breach.fact,
             "CurrentValue": str(breach.current_value),
             "Threshold": str(breach.threshold_value),
             "WindowMin": str(window_minutes),
             "GrafanaUrl": grafana_url,
         },
     )
-
-
-def group_breaches_by_equipment(
-    breaches: list[ThresholdBreach],
-) -> dict[str, list[ThresholdBreach]]:
-    """Group breaches by eqp_id for per-equipment alerting."""
-    groups: dict[str, list[ThresholdBreach]] = {}
-    for breach in breaches:
-        groups.setdefault(breach.eqp_id, []).append(breach)
-    return groups

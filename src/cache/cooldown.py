@@ -58,10 +58,14 @@ class AlertCooldownManager:
     # ------------------------------------------------------------------
     # Single-key API
     # ------------------------------------------------------------------
+    # The v2 cooldown identity is (process, eqpId, proc, notify, severity):
+    # suppression is per equipment × EARS proc × notify channel × severity, so
+    # rules that share a notify channel collapse into one incident while a
+    # WARNING→CRITICAL escalation still pages.
     async def is_cooling_down(
-        self, eqp_id: str, category: str, metric: str
+        self, process: str, eqp_id: str, proc: str, notify: str, severity: str
     ) -> bool:
-        key = self._make_key(eqp_id, category, metric)
+        key = self._make_key(process, eqp_id, proc, notify, severity)
         # Debug mode: local-only, never touch Redis. The point of debug
         # mode is a self-contained single-run view; reading prod Redis
         # cooldowns would leak cross-run state into the debug session.
@@ -79,12 +83,14 @@ class AlertCooldownManager:
 
     async def set_cooldown(
         self,
+        process: str,
         eqp_id: str,
-        category: str,
-        metric: str,
+        proc: str,
+        notify: str,
+        severity: str,
         cooldown_minutes: int,
     ) -> None:
-        key = self._make_key(eqp_id, category, metric)
+        key = self._make_key(process, eqp_id, proc, notify, severity)
         ttl_sec = cooldown_minutes * 60
         # Write local first so a Redis failure cannot skip it.
         self._local[key] = 1
@@ -106,9 +112,9 @@ class AlertCooldownManager:
             )
 
     async def clear_cooldown(
-        self, eqp_id: str, category: str, metric: str
+        self, process: str, eqp_id: str, proc: str, notify: str, severity: str
     ) -> None:
-        key = self._make_key(eqp_id, category, metric)
+        key = self._make_key(process, eqp_id, proc, notify, severity)
         self._local.pop(key, None)
         if self._debug_read_only:
             return  # local cleared, Redis untouched
@@ -121,14 +127,14 @@ class AlertCooldownManager:
     # Batch API (single round-trip for up to N keys)
     # ------------------------------------------------------------------
     async def is_cooling_down_batch(
-        self, checks: list[tuple[str, str, str]]
-    ) -> dict[tuple[str, str, str], bool]:
+        self, checks: list[tuple[str, str, str, str, str]]
+    ) -> dict[tuple[str, str, str, str, str], bool]:
         if self._debug_read_only:
             return {c: (self._make_key(*c) in self._local) for c in checks}
         try:
             async with self._redis.client.pipeline(transaction=False) as pipe:
-                for eqp_id, cat, met in checks:
-                    pipe.exists(self._make_key(eqp_id, cat, met))
+                for check in checks:
+                    pipe.exists(self._make_key(*check))
                 results = await pipe.execute()
             return {c: bool(r) for c, r in zip(checks, results, strict=True)}
         except _REDIS_UNAVAILABLE as e:
@@ -142,5 +148,10 @@ class AlertCooldownManager:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _make_key(self, eqp_id: str, category: str, metric: str) -> str:
-        return f"{self._redis.key_prefix}:cooldown:{eqp_id}:{category}:{metric}"
+    def _make_key(
+        self, process: str, eqp_id: str, proc: str, notify: str, severity: str
+    ) -> str:
+        return (
+            f"{self._redis.key_prefix}:cooldown:"
+            f"{process}:{eqp_id}:{proc}:{notify}:{severity}"
+        )

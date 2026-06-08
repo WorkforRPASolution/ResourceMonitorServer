@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>설비 모니터링 기준정보 SCHEMA 완전 해설 (RESOURCE_MONITOR_PROFILE)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#30363d;
+    --text:#c9d1d9; --muted:#8b949e; --faint:#6e7681;
+    --accent:#58a6ff; --accent2:#79c0ff;
+    --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; --orange:#f0883e;
+    --chip:#21262d;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    font-size:15px; line-height:1.72;
+  }
+  code,.mono,pre{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;}
+  code{
+    background:var(--chip); border:1px solid var(--border); border-radius:5px;
+    padding:1px 6px; font-size:0.86em; color:var(--accent2); white-space:nowrap;
+  }
+  pre code{background:none; border:none; padding:0; white-space:inherit; color:inherit;}
+  a{color:var(--accent); text-decoration:none;}
+  a:hover{text-decoration:underline;}
+
+  /* layout */
+  .page{display:grid; grid-template-columns:260px 1fr; align-items:start;}
+  @media(max-width:980px){.page{grid-template-columns:1fr;}}
+
+  nav.toc{
+    position:sticky; top:0; height:100vh; overflow:auto;
+    background:var(--panel); border-right:1px solid var(--border);
+    padding:20px 16px 50px; font-size:13px;
+  }
+  @media(max-width:980px){nav.toc{position:static; height:auto; border-right:none; border-bottom:1px solid var(--border);}}
+  nav.toc .toc-title{font-size:12px; color:var(--faint); text-transform:uppercase; letter-spacing:.08em; margin:0 0 12px;}
+  nav.toc a{display:block; color:var(--muted); padding:5px 8px; border-radius:6px; border-left:2px solid transparent;}
+  nav.toc a:hover{background:var(--panel2); color:var(--text); text-decoration:none;}
+  nav.toc a .n{color:var(--faint); margin-right:6px;}
+
+  main{padding:30px 40px 100px; max-width:1080px;}
+  @media(max-width:980px){main{padding:24px 18px 80px;}}
+
+  header.hero{margin-bottom:30px; padding-bottom:22px; border-bottom:1px solid var(--border);}
+  header.hero h1{margin:0 0 8px; font-size:25px; line-height:1.3;}
+  header.hero p.lead{margin:0 0 4px; color:var(--muted); font-size:14px;}
+  .badges{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;}
+  .badge{
+    background:var(--chip); border:1px solid var(--border); border-radius:20px;
+    padding:4px 12px; font-size:12px; color:var(--muted);
+  }
+  .badge b{color:var(--accent2);}
+
+  section{margin:46px 0 0; scroll-margin-top:18px;}
+  section > h2{
+    font-size:21px; margin:0 0 4px; padding-bottom:8px;
+    border-bottom:1px solid var(--border); display:flex; align-items:baseline; gap:10px;
+  }
+  section > h2 .sec-no{
+    color:var(--accent); font-size:15px; font-weight:700;
+    background:var(--panel2); border:1px solid var(--border); border-radius:7px;
+    padding:2px 9px; flex:none;
+  }
+  section > h2 .sec-sub{color:var(--faint); font-size:13px; font-weight:400; margin-left:auto;}
+  h3{font-size:16px; margin:26px 0 8px; color:var(--accent2);}
+  h4{font-size:14px; margin:18px 0 6px; color:var(--text);}
+  p{margin:8px 0;}
+
+  .analogy{
+    background:var(--panel2); border-left:3px solid var(--accent);
+    border-radius:0 8px 8px 0; padding:11px 15px; margin:14px 0; font-size:14px; color:#aeb9c4;
+  }
+  .analogy b{color:var(--accent2);}
+  .note{
+    background:rgba(88,166,255,.07); border:1px solid rgba(88,166,255,.25);
+    border-radius:9px; padding:11px 15px; margin:14px 0; font-size:13.5px;
+  }
+  .note.warn{background:rgba(210,153,34,.08); border-color:rgba(210,153,34,.3);}
+  .note.warn b{color:var(--yellow);}
+  .note.danger{background:rgba(248,81,73,.08); border-color:rgba(248,81,73,.3);}
+  .note.danger b{color:var(--red);}
+  .note .tag{font-weight:700; color:var(--accent2);}
+
+  table{
+    width:100%; border-collapse:collapse; margin:14px 0; font-size:13px;
+    background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden;
+  }
+  th,td{padding:8px 11px; text-align:left; border-bottom:1px solid var(--border); vertical-align:top;}
+  th{background:var(--panel2); color:var(--accent2); font-weight:600; font-size:12.5px; white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  td.c, th.c{text-align:center;}
+  .yes{color:var(--green); font-weight:700;}
+  .no{color:var(--faint);}
+  .req{color:var(--red); font-weight:700;}
+  .opt{color:var(--muted);}
+  .cond{color:var(--yellow); font-weight:600;}
+
+  pre{
+    background:#0b0f15; border:1px solid var(--border); border-radius:10px;
+    padding:15px 17px; margin:14px 0; font-size:12.8px; line-height:1.62;
+    overflow:auto;
+  }
+  .tok-key{color:var(--accent2);} .tok-str{color:#a5d6ff;} .tok-num{color:var(--orange);}
+  .tok-bool{color:var(--purple);} .tok-com{color:var(--faint); font-style:italic;}
+
+  .flow{display:flex; gap:6px; flex-wrap:wrap; align-items:stretch; margin:16px 0;}
+  .flow .node{
+    flex:1 1 150px; background:var(--chip); border:1px solid var(--border); border-radius:10px;
+    padding:11px 13px;
+  }
+  .flow .node .k{color:var(--accent2); font-weight:700; font-family:ui-monospace,monospace; font-size:13px;}
+  .flow .node .d{color:var(--muted); font-size:12px; margin-top:2px;}
+  .flow .arrow{align-self:center; color:var(--faint); font-size:18px;}
+  @media(max-width:700px){.flow{flex-direction:column;} .flow .arrow{transform:rotate(90deg);}}
+
+  .pill{display:inline-block; font-size:11px; font-weight:700; padding:1px 8px; border-radius:11px; vertical-align:middle;}
+  .ph1{background:rgba(63,185,80,.16); color:#56d364; border:1px solid rgba(63,185,80,.4);}
+  .ph2{background:rgba(210,153,34,.16); color:#e3b341; border:1px solid rgba(210,153,34,.4);}
+  .ph3{background:rgba(188,140,255,.16); color:#d2a8ff; border:1px solid rgba(188,140,255,.4);}
+
+  .fact-card{
+    background:var(--panel); border:1px solid var(--border); border-radius:11px;
+    padding:14px 16px; margin:12px 0;
+  }
+  .fact-card h4{margin:0 0 6px; display:flex; align-items:center; gap:9px; font-size:15px;}
+  .fact-card h4 code{font-size:14px;}
+  .fact-card .meta{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:6px 18px; margin:8px 0; font-size:12.5px;}
+  .fact-card .meta div{color:var(--muted);}
+  .fact-card .meta b{color:var(--text); font-weight:600;}
+  .fact-card .ex{font-size:12.5px; color:#aeb9c4; margin-top:6px;}
+
+  .cat-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr)); gap:12px; margin:14px 0;}
+  .cat{background:var(--panel); border:1px solid var(--border); border-radius:11px; padding:13px 15px;}
+  .cat h4{margin:0 0 3px; color:var(--accent2); font-family:ui-monospace,monospace; font-size:14px;}
+  .cat .sys{font-size:11px; color:var(--faint);}
+  .cat table{margin:9px 0 0; font-size:12px;}
+  .cat th,.cat td{padding:5px 8px;}
+
+  footer{margin-top:60px; padding-top:20px; border-top:1px solid var(--border); color:var(--faint); font-size:12.5px;}
+  .kbd{font-family:ui-monospace,monospace; background:var(--chip); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:0 6px; font-size:12px;}
+  .anchor-h{color:var(--faint); font-weight:400; font-size:13px; margin-left:6px;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav class="toc">
+  <p class="toc-title">목차</p>
+  <a href="#s1"><span class="n">1</span>큰 그림: 4계층</a>
+  <a href="#s2"><span class="n">2</span>scope — 누구에게</a>
+  <a href="#s3"><span class="n">3</span>measures — 잰다</a>
+  <a href="#s4"><span class="n">4</span>fact 카탈로그(16종)</a>
+  <a href="#s5"><span class="n">5</span>fact 조건부 파라미터</a>
+  <a href="#s6"><span class="n">6</span>rules — 판단</a>
+  <a href="#s7"><span class="n">7</span>연산자·정량자</a>
+  <a href="#s8"><span class="n">8</span>notify — 알린다</a>
+  <a href="#s9"><span class="n">9</span>저장 검증 규칙(10)</a>
+  <a href="#s10"><span class="n">10</span>scope 상속(cascade)</a>
+  <a href="#s11"><span class="n">11</span>EARS 메트릭 카탈로그</a>
+  <a href="#s12"><span class="n">12</span>함정 9가지</a>
+  <a href="#s13"><span class="n">13</span>Phase 1·2·3 구분</a>
+  <a href="#s14"><span class="n">14</span>전체 JSON 예시</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>설비 모니터링 기준정보 — SCHEMA 완전 해설</h1>
+  <p class="lead">컬렉션 <code>RESOURCE_MONITOR_PROFILE</code> 의 <b>모든 항목과 설정 가능한 값</b>을, 코딩을 모르는 설비 엔지니어가 읽고 이해할 수 있게 하나도 빠짐없이 설명합니다.</p>
+  <p class="lead">이 문서는 <b>읽고 이해하는 레퍼런스</b>입니다. 값을 직접 만들어 보고 싶다면 <a href="resource-monitor-profile-playground.html">설정 Playground</a>를 함께 쓰세요.</p>
+  <div class="badges">
+    <span class="badge">근거: <b>SCHEMA.md v2.0</b> (1차 진실)</span>
+    <span class="badge">메트릭: <b>EARS-METRICS-REFERENCE.md</b></span>
+    <span class="badge">검증 동작: <b>src/db/models.py · fact_catalog.py</b></span>
+    <span class="badge"><span class="pill ph1">Phase 1 구현완료</span> · <span class="pill ph2">Phase 2</span> · <span class="pill ph3">Phase 3</span></span>
+  </div>
+</header>
+
+<!-- ================= §1 큰 그림 ================= -->
+<section id="s1">
+  <h2><span class="sec-no">§1</span> 큰 그림 — 한 장비 설정은 4계층 <span class="sec-sub">SCHEMA §0.2 / §1.1</span></h2>
+  <p>모니터링 설정은 컬렉션 <b>하나</b>(<code>RESOURCE_MONITOR_PROFILE</code>)로 관리합니다. "단순 임계값"과 "복합 조건"을 따로 두지 않습니다 — 둘 다 <b>같은 구조</b>이고, 조건 개수만 다릅니다(단순=조건 1개, 복합=조건 여러 개). 한 문서(프로파일) 안에 네 가지 계층이 들어갑니다.</p>
+
+  <table>
+    <thead><tr><th>계층</th><th>역할</th><th>비유</th><th>주요 내용</th></tr></thead>
+    <tbody>
+      <tr><td><code>scope</code></td><td>이 설정을 <b>어느 장비에</b> 적용할지</td><td>🎯 누구에게</td><td>process / eqpModel / eqpId</td></tr>
+      <tr><td><code>measures[]</code></td><td><b>무엇을 어떻게 잴지</b> (집계 → fact 산출)</td><td>🌡️ 잰다</td><td>category·metric·window + facts</td></tr>
+      <tr><td><code>rules[]</code></td><td>잰 값으로 <b>언제 경보할지</b> (조건 + 평가 주기)</td><td>🚨 판단한다</td><td>when 조건 + interval + severity</td></tr>
+      <tr><td><code>notify{}</code></td><td><b>어떻게 알릴지</b> (이메일·억제)</td><td>📧 알린다</td><td>cooldown + email 코드</td></tr>
+    </tbody>
+  </table>
+
+  <h3>데이터 흐름</h3>
+  <p class="analogy"><b>scope로 대상 결정 → measures로 잼 → rules로 판단 → notify로 발송.</b> 이 순서가 전체 시스템의 한 사이클입니다.</p>
+  <div class="flow">
+    <div class="node"><div class="k">scope</div><div class="d">대상 장비 결정</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="k">measures</div><div class="d">ES에서 집계해 fact 산출</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="k">rules</div><div class="d">fact로 경보 여부 판단</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="k">notify</div><div class="d">cooldown 확인 후 이메일</div></div>
+  </div>
+
+  <h3>한 문서의 뼈대</h3>
+<pre><span class="tok-com">// RESOURCE_MONITOR_PROFILE 문서 1개</span>
+{
+  <span class="tok-key">"scope"</span>:    { <span class="tok-key">"process"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpModel"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> },  <span class="tok-com">// 누구에게</span>
+  <span class="tok-key">"enabled"</span>:  <span class="tok-bool">true</span>,                                              <span class="tok-com">// 켜고 끄기</span>
+  <span class="tok-key">"governance"</span>: { <span class="tok-key">"version"</span>: <span class="tok-num">1</span>, <span class="tok-key">"updated_by"</span>: <span class="tok-str">"..."</span> },        <span class="tok-com">// 변경 이력/낙관락</span>
+  <span class="tok-key">"measures"</span>: [ <span class="tok-com">/* 잰다: 무엇을·어떻게 → fact 산출 */</span> ],
+  <span class="tok-key">"rules"</span>:    [ <span class="tok-com">/* 판단: fact로 경보 결정 + 평가 주기 */</span> ],
+  <span class="tok-key">"notify"</span>:   { <span class="tok-com">/* 알린다: 전달 채널 */</span> }
+}</pre>
+  <p><code>enabled</code> 는 이 설정 전체를 켜고 끄는 스위치(기본 <code>true</code>)이고, <code>governance</code> 는 누가 언제 왜 바꿨는지(<code>version</code>·<code>updated_by</code>·<code>updated_at</code>·<code>change_reason</code>)를 담는 변경 이력입니다. <code>version</code> 은 동시 수정 충돌을 막는 낙관적 잠금 토큰으로도 쓰입니다. (이 문서 전체 스위치와 별개로, <b>rule 하나만</b> 끄는 <code>rule.enabled</code>도 있습니다 — <a href="#s6">§6 예시 ⑨</a>.)</p>
+  <div class="note"><span class="tag">DB 위치</span> 모든 컬렉션은 단일 <code>EARS</code> MongoDB에 공존합니다. RMS는 <code>RESOURCE_MONITOR_PROFILE</code> 만 소유(읽기·쓰기)하고 <code>EQP_INFO</code> 등은 read-only로 참조합니다.</div>
+</section>
+
+<!-- ================= §2 scope ================= -->
+<section id="s2">
+  <h2><span class="sec-no">§2</span> scope — 어느 장비에 적용할까 <span class="sec-sub">SCHEMA §1.2</span></h2>
+  <p class="analogy">🎯 <b>누구에게</b> — 이 설정이 적용될 장비 범위를 정합니다. <code>EQP_INFO</code>(장비 마스터)의 계층을 그대로 따릅니다. 넓은 범위(전체)부터 좁은 범위(특정 장비 1대)까지 3단계입니다.</p>
+
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>scope.process</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td>EQP_INFO.process. <code>"*"</code>=전체. 파티션/인덱스 라우팅 키</td></tr>
+      <tr><td><code>scope.eqpModel</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"*"</code></td><td>장비 모델. <b>카멜케이스</b></td></tr>
+      <tr><td><code>scope.eqpId</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"*"</code></td><td>단일 장비 1대</td></tr>
+    </tbody>
+  </table>
+
+  <h3>이름 표기 주의 — <code>eqpModel</code> / <code>model</code> / <code>eqp_model</code></h3>
+  <p>같은 항목이 위치마다 이름이 다릅니다. 모두 같은 값입니다.</p>
+  <table>
+    <thead><tr><th>위치</th><th>이름</th></tr></thead>
+    <tbody>
+      <tr><td>JSON으로 보낼 때(API)</td><td><code>model</code></td></tr>
+      <tr><td>MongoDB에 저장된 키</td><td><code>eqpModel</code> (카멜케이스)</td></tr>
+      <tr><td>파이썬 내부 코드</td><td><code>eqp_model</code> (Pydantic alias)</td></tr>
+    </tbody>
+  </table>
+  <p>마찬가지로 단일 장비는 JSON·Mongo에서 <code>eqpId</code>, 파이썬에서 <code>eqp_id</code> 입니다. <code>"*"</code> 는 "해당 단계 전체"를 뜻하는 와일드카드입니다.</p>
+
+  <h4>scope 작성 예시</h4>
+<pre><span class="tok-com">// 전역: 모든 장비에 적용</span>
+<span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> }
+
+<span class="tok-com">// 특정 공정 전체</span>
+<span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"PHOTO"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> }
+
+<span class="tok-com">// 단일 장비 1대 (가장 구체적)</span>
+<span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"PHOTO"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"MODEL_A"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"EQP001"</span> }</pre>
+  <p class="opt">읽는 법: 위로 갈수록 넓고 아래로 갈수록 좁습니다. 좁은 문서가 넓은 문서를 <b>상속</b>하고 바꿀 것만 덮습니다(<a href="#s10">§10</a>).</p>
+
+  <div class="note warn"><span class="tag">⚠️ 혼동 금지</span> <b><code>scope.process</code></b>(설정 적용 범위 = ES 인덱스 파티션 키)와 measure의 <b><code>proc</code></b>(EARS 행의 정체성 = <code>EARS_PROCNAME</code>)은 <b>완전히 다른 개념</b>입니다. 이름이 비슷할 뿐입니다(함정 <a href="#s12">P2</a>).</div>
+  <p>구체적인 scope 문서는 더 넓은 scope를 <b>상속</b>하고 "바꿀 것만" 담습니다(전체 복사 금지). 합성 규칙은 <a href="#s10">§10 scope 상속</a>에서 자세히 다룹니다.</p>
+</section>
+
+<!-- ================= §3 measures ================= -->
+<section id="s3">
+  <h2><span class="sec-no">§3</span> measures — 무엇을 어떻게 잴까 <span class="sec-sub">SCHEMA §1.3</span></h2>
+  <p class="analogy">🌡️ <b>잰다</b> — 각 measure는 "무엇을(어떤 메트릭) 어떻게(어떤 집계로) 재서 어떤 <b>fact</b>(잰 결과값)를 만들지"의 정의입니다. measure는 <b>집계창(window)만</b> 갖고, <b>평가 주기(interval)는 갖지 않습니다</b> — 주기는 rule의 몫입니다.</p>
+
+  <h3>measure의 모든 필드</h3>
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td>문서 내 유일. rule이 <code>"id.type"</code>으로 참조하는 손잡이</td></tr>
+      <tr><td><code>category</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td>EARS category(cpu/memory/disk…). 메트릭 혼입 방지에 필수</td></tr>
+      <tr><td><code>metric</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td>EARS metric. <b>와일드카드 가능</b>(<code>"*_core_load"</code>, <code>"*"</code>)</td></tr>
+      <tr><td><code>proc</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"@system"</code></td><td>EARS proc. <code>"*"</code>이면 proc별로 fact 산출</td></tr>
+      <tr><td><code>window_minutes</code></td><td>int</td><td class="c req">✓</td><td class="c">—</td><td>집계 시간창(분). 이 measure의 모든 fact가 공유</td></tr>
+      <tr><td><code>group_by</code></td><td>string[]</td><td class="c opt">선택</td><td class="c"><code>["eqpId"]</code></td><td>묶음 기준. <code>proc=="*"</code>이면 자동 <code>["eqpId","proc"]</code></td></tr>
+      <tr><td><code>expand</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>"scalar"</code></td><td><code>scalar</code>/<code>instance</code>. metric이 와일드카드면 자동 <code>instance</code></td></tr>
+      <tr><td><code>metric_kind</code></td><td>enum｜null</td><td class="c opt">선택</td><td class="c"><code>null</code></td><td><code>gauge</code>/<code>counter</code>/<code>cumulative</code>. <b>lint 힌트</b>(강제 아님)</td></tr>
+      <tr><td><code>bucketing</code></td><td>object｜null</td><td class="c cond">조건부</td><td class="c"><code>null</code></td><td>시간축 fact가 있으면 <b>필수</b></td></tr>
+      <tr><td><code>baseline</code></td><td>object｜null</td><td class="c cond">조건부</td><td class="c"><code>null</code></td><td><code>baseline_dev</code> fact가 있으면 <b>필수</b></td></tr>
+      <tr><td><code>facts[]</code></td><td>array</td><td class="c req">✓</td><td class="c">—</td><td>산출할 fact 목록. 항목 1개 = fact 1개(<a href="#s4">§4</a>)</td></tr>
+    </tbody>
+  </table>
+
+  <h4><code>group_by</code> 와 <code>expand</code> 의 값</h4>
+  <ul>
+    <li><code>group_by</code> 허용 값: <code>"eqpId"</code>, <code>"proc"</code>. 보통 장비별(<code>eqpId</code>)로 묶고, proc별로도 나누려면 <code>proc</code>을 추가합니다(<code>proc=="*"</code>이면 자동 추가).</li>
+    <li><code>expand</code> = <code>"scalar"</code> 는 메트릭 하나당 fact 하나. <code>"instance"</code> 는 와일드카드/다중 인스턴스(디스크 <code>C:</code>·<code>D:</code>, 센서 여러 개 등)마다 <b>fact 집합</b>을 산출합니다. 이때 rule에서 <a href="#s7">정량자(quantifier)</a>로 "하나라도/모두/N개 이상"을 정합니다.</li>
+    <li><code>metric_kind</code> 는 강제 규칙이 아니라 힌트입니다. <code>gauge</code>(현재값: CPU%·온도), <code>counter</code>(누적 증가: 에러 수), <code>cumulative</code>. <code>gauge</code>에 <code>delta</code>/<code>growth_rate</code>를 쓰면 lint 경고가 납니다(<a href="#s9">검증 10</a>).</li>
+  </ul>
+
+  <h3><code>bucketing</code> — 시간축 fact용 잘게 쪼갠 창</h3>
+  <p><code>duration</code>·<code>growth_rate</code>·<code>moving_avg</code>·<code>trend</code> 같은 "시간에 따른 변화"를 보는 fact는, 큰 창을 작은 버킷으로 쪼개 계산합니다. 그 버킷 정의가 <code>bucketing</code> 입니다.</p>
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>bucketing.seconds</code></td><td>int</td><td class="c req">✓*</td><td class="c">—</td><td>버킷 하나의 크기(초). date_histogram 간격</td></tr>
+      <tr><td><code>bucketing.points</code></td><td>int｜null</td><td class="c cond">조건부</td><td class="c"><code>null</code></td><td><code>moving_avg</code>/<code>trend</code>가 있으면 필수(평활화 점 개수)</td></tr>
+    </tbody>
+  </table>
+  <p class="opt">* <code>bucketing</code> 객체를 두면 <code>seconds</code>는 반드시 있어야 합니다. 제약: <code>seconds × points ≤ window_minutes × 60</code>(<a href="#s9">검증 3</a>).</p>
+
+  <h3><code>baseline</code> — 과거 대비용 기준선 <span class="pill ph3">Phase 3</span></h3>
+  <p><code>baseline_dev</code> fact(과거 동일 시간대 대비 편차%)가 있을 때만 필요합니다.</p>
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>baseline.days</code></td><td>int</td><td class="c"><code>7</code></td><td>과거 며칠을 기준선으로 볼지</td></tr>
+      <tr><td><code>baseline.same_hour</code></td><td>bool</td><td class="c"><code>true</code></td><td>동일 시간대만 비교(예: 매일 14시끼리)</td></tr>
+      <tr><td><code>baseline.min_points</code></td><td>int</td><td class="c"><code>30</code></td><td>표본이 이보다 적으면 경보하지 않음</td></tr>
+      <tr><td><code>baseline.deviation_floor</code></td><td>float</td><td class="c"><code>1.0</code></td><td>분모≈0일 때 편차% 폭주를 막는 하한</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note"><span class="tag">핵심 원칙</span> <b>1 measure 항목 = 1 fact = 1 type.</b> <code>bucketing</code>·<code>baseline</code>처럼 여러 통계가 함께 쓰는 파라미터는 measure 레벨에 한 번만 둬서 일관성을 강제합니다(예: <code>moving_avg</code>와 <code>trend</code>가 같은 평활화 창을 쓰도록).</p></div>
+
+  <h3>measure 작성 예시</h3>
+  <h4>① 단순 스칼라 — CPU 사용률 한 종류, fact 여러 개</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"cpu"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"total_used_pct"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+  <span class="tok-key">"window_minutes"</span>: <span class="tok-num">15</span>, <span class="tok-key">"metric_kind"</span>: <span class="tok-str">"gauge"</span>,
+  <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"max"</span> }, { <span class="tok-key">"type"</span>: <span class="tok-str">"avg"</span> }, { <span class="tok-key">"type"</span>: <span class="tok-str">"p95"</span> } ] }</pre>
+  <p class="opt">읽는 법: 15분 창에서 <code>cpu</code>의 <code>total_used_pct</code>를 재고, 그 창의 <b>최댓값·평균·95백분위</b> 세 fact를 산출. rule은 <code>cpu.max</code>·<code>cpu.avg</code>·<code>cpu.p95</code>로 부릅니다.</p>
+
+  <h4>② 인스턴스 확장 — 와일드카드 metric(디스크 파티션 전부)</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"disk"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"disk"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+  <span class="tok-key">"window_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"expand"</span>: <span class="tok-str">"instance"</span>,
+  <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"max"</span> } ] }</pre>
+  <p class="opt">읽는 법: <code>metric:"*"</code>이라 <code>C:</code>·<code>D:</code> 등 파티션마다 <code>max</code>를 산출(<code>expand</code>는 자동으로 <code>instance</code>). rule에서 <a href="#s7">정량자</a>로 "하나라도/모두"를 정합니다.</p>
+
+  <h4>③ 시간축 — bucketing 필요(증가율·추세)</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"mem_size"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"memory"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"total_used_size"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+  <span class="tok-key">"window_minutes"</span>: <span class="tok-num">60</span>, <span class="tok-key">"metric_kind"</span>: <span class="tok-str">"gauge"</span>,
+  <span class="tok-key">"bucketing"</span>: { <span class="tok-key">"seconds"</span>: <span class="tok-num">300</span>, <span class="tok-key">"points"</span>: <span class="tok-num">6</span> },
+  <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"growth_rate"</span>, <span class="tok-key">"unit"</span>: <span class="tok-str">"per_hour"</span> }, { <span class="tok-key">"type"</span>: <span class="tok-str">"trend"</span> } ] }</pre>
+  <p class="opt">읽는 법: <code>growth_rate</code>·<code>trend</code>는 시간축 fact라 <code>bucketing</code> 필수, <code>trend</code> 때문에 <code>points</code>도 필수(<a href="#s9">검증 2</a>). <code>300×6=1800초 ≤ 60분×60</code>이라 <a href="#s9">검증 3</a> 통과.</p>
+</section>
+
+<!-- ================= §4 fact 카탈로그 ================= -->
+<section id="s4">
+  <h2><span class="sec-no">§4</span> fact 카탈로그 — 16종 전수 <span class="sec-sub">SCHEMA §2 / fact_catalog.py</span></h2>
+  <p><b>fact = measure가 만들어내는 잰 결과값</b>입니다. <code>facts[].type</code> 에 넣는 값이 곧 fact 이름이고, rule에서 <code>measureId.type</code>(예: <code>cpu.p95</code>)으로 부릅니다. <b>닫힌 목록</b>이라 자유 텍스트는 쓸 수 없습니다. 아래 16종이 전부입니다.</p>
+
+  <h3>전체 요약표</h3>
+  <table>
+    <thead><tr>
+      <th>type(=fact)</th><th>산출 의미</th><th>필수 params</th><th>허용 op</th><th>value 단위</th><th class="c">window<br>따름</th><th class="c">Phase</th>
+    </tr></thead>
+    <tbody>
+      <tr><td><code>max</code></td><td>창 내 최댓값</td><td class="no">—</td><td><code>&gt;</code> <code>&gt;=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>min</code></td><td>창 내 최솟값</td><td class="no">—</td><td><code>&lt;</code> <code>&lt;=</code> <code>==</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>avg</code></td><td>창 내 평균</td><td class="no">—</td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>last</code></td><td>창 내 마지막 값</td><td class="no">—</td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code> <code>==</code> <code>!=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>p50</code> <code>p90</code> <code>p95</code> <code>p99</code></td><td>백분위수</td><td class="no">—</td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>spike_count</code></td><td><code>over</code> 초과 샘플 수</td><td class="req"><code>over</code>,<code>direction</code></td><td><code>&gt;</code> <code>&gt;=</code></td><td>정수(횟수)</td><td class="c yes">✅</td><td class="c"><span class="pill ph1">1</span></td></tr>
+      <tr><td><code>duration</code></td><td>최대 연속 지속(초)</td><td class="req"><code>over</code>,<code>direction</code></td><td><code>&gt;</code> <code>&gt;=</code></td><td>초</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>delta</code></td><td>변화량</td><td class="req"><code>mode</code></td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code> <code>!=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>growth_rate</code></td><td>단위시간당 증가</td><td class="req"><code>unit</code></td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></td><td>단위/시간</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>moving_avg</code></td><td>이동평균값</td><td class="cond"><code>bucketing.points</code></td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></td><td>메트릭 단위</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>trend</code></td><td>추세(증가/감소…)</td><td class="cond"><code>bucketing.points</code></td><td><code>trend==</code></td><td>enum</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>zscore</code></td><td>표준화 이상도(창 내부)</td><td class="req"><code>direction</code></td><td><code>&gt;</code> <code>&gt;=</code></td><td>σ(표준편차)</td><td class="c yes">✅</td><td class="c"><span class="pill ph2">2</span></td></tr>
+      <tr><td><code>baseline_dev</code></td><td>과거 동일시간대 대비 편차%</td><td class="cond"><code>baseline</code></td><td><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></td><td>%</td><td class="c no">❌ 과거 별도쿼리</td><td class="c"><span class="pill ph3">3</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note"><span class="tag">상태 점검(state_check)은 별도 type가 없습니다</span> <code>min</code>/<code>max</code>로 흡수합니다 — 필수 프로세스 다운 → <code>min == 0</code>, 금지 프로세스 실행 → <code>max &gt; 0</code>, 디스크 건강 위험 → <code>max &gt;= 2</code>(PRED_FAIL 이상).</div>
+
+  <h3>Phase 1 fact — 지금 엔진이 동작 <span class="pill ph1">구현완료</span></h3>
+
+  <div class="fact-card"><h4><code>max</code> · 창 내 최댓값</h4>
+    <div class="meta"><div>필수 params: <b>없음</b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code></b> (높을 때만)</div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">예: <code>cpu.max &gt;= 95</code> → 창 안에서 CPU가 한 번이라도 95% 이상이면 경보.</div>
+  </div>
+  <div class="fact-card"><h4><code>min</code> · 창 내 최솟값</h4>
+    <div class="meta"><div>필수 params: <b>없음</b></div><div>허용 op: <b><code>&lt;</code> <code>&lt;=</code> <code>==</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">예: <code>mem_free.min &lt;= 5</code>(여유 메모리 바닥), <code>proc_required.min == 0</code>(필수 프로세스 다운). <code>==</code>가 허용되는 건 상태 점검을 위해서입니다.</div>
+  </div>
+  <div class="fact-card"><h4><code>avg</code> · 창 내 평균</h4>
+    <div class="meta"><div>필수 params: <b>없음</b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">예: <code>cpu.avg &gt;= 70</code> → 평균적으로 부하가 높은 상태.</div>
+  </div>
+  <div class="fact-card"><h4><code>last</code> · 창 내 마지막(최신) 값</h4>
+    <div class="meta"><div>필수 params: <b>없음</b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code> <code>==</code> <code>!=</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">가장 최근 샘플 1개를 봅니다. ES <code>top_hits</code>를 쓰므로 비쌉니다 — 꼭 필요할 때만.</div>
+  </div>
+  <div class="fact-card"><h4><code>p50</code> <code>p90</code> <code>p95</code> <code>p99</code> · 백분위수</h4>
+    <div class="meta"><div>필수 params: <b>없음</b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex"><code>p95</code>=상위 5%를 제외한 값. 순간 튐(spike)에 둔감하고 "대체로 높은" 상태를 잡습니다. 예: <code>cpu.p95 &gt; 80</code>.</div>
+  </div>
+  <div class="fact-card"><h4><code>spike_count</code> · 사건 횟수</h4>
+    <div class="meta"><div>필수 params: <b><code>over</code>, <code>direction</code></b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code></b></div><div>value 단위: <b>정수(횟수)</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex"><code>over</code>(경계값)를 <code>direction</code>(above/below) 방향으로 넘긴 샘플 수. 예: <code>over:90, direction:above</code> + rule <code>spike_count &gt; 5</code> → 90% 초과가 5번 넘게 발생.</div>
+  </div>
+
+  <h3>Phase 2 fact — 스키마·검증은 받지만 엔진은 아직 skip+경고 <span class="pill ph2">후속</span></h3>
+
+  <div class="fact-card"><h4><code>duration</code> · 최대 연속 지속(초)</h4>
+    <div class="meta"><div>필수 params: <b><code>over</code>, <code>direction</code></b> + measure <code>bucketing.seconds</code></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code></b></div><div>value 단위: <b>초</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex"><code>over</code> 경계를 연속으로 넘긴 가장 긴 시간(초). 예: 80% 초과가 <code>&gt; 180</code>초 지속.</div>
+  </div>
+  <div class="fact-card"><h4><code>delta</code> · 변화량</h4>
+    <div class="meta"><div>필수 params: <b><code>mode</code></b>(<code>last_minus_first</code>/<code>max_minus_min</code>)</div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code> <code>!=</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">창 안에서의 변화량. 누적 카운터(에러 수 등)에 적합. 예: <code>ssd_err.delta &gt; 0</code> → 새 미디어 에러 발생.</div>
+  </div>
+  <div class="fact-card"><h4><code>growth_rate</code> · 단위시간당 증가</h4>
+    <div class="meta"><div>필수 params: <b><code>unit</code></b>(<code>per_hour</code>/<code>per_day</code>) + measure <code>bucketing.seconds</code></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></b></div><div>value 단위: <b>단위/시간</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">기울기(추세선). 예: 메모리가 시간당 50MB 이상 증가 → 누수 의심.</div>
+  </div>
+  <div class="fact-card"><h4><code>moving_avg</code> · 이동평균값</h4>
+    <div class="meta"><div>필수 params: measure <b><code>bucketing.seconds</code> + <code>points</code></b></div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></b></div><div>value 단위: <b>메트릭 단위</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex"><code>points</code>개 버킷으로 평활화한 평균. 노이즈를 줄여 추세를 봅니다.</div>
+  </div>
+  <div class="fact-card"><h4><code>trend</code> · 추세 방향</h4>
+    <div class="meta"><div>필수 params: measure <b><code>bucketing.seconds</code> + <code>points</code></b></div><div>허용 op: <b><code>trend==</code> 만</b></div><div>value 단위: <b>enum(문자열)</b> 예 <code>"increasing"</code></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex">유일하게 <code>op</code>가 <code>trend==</code>이고 <code>value</code>가 문자열입니다. 예: <code>mem_size.trend trend== "increasing"</code>.</div>
+  </div>
+  <div class="fact-card"><h4><code>zscore</code> · 표준화 이상도(창 내부)</h4>
+    <div class="meta"><div>필수 params: <b><code>direction</code></b>(<code>high</code>/<code>low</code>, 기본 <code>high</code>)</div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code></b></div><div>value 단위: <b>σ(표준편차)</b></div><div>window 따름: <b>✅</b></div></div>
+    <div class="ex"><code>(값 − 평균) / 표준편차</code>. 창 내부 분포에서 얼마나 튀는지. <code>spike_count</code>·<code>duration</code>의 <code>above/below</code>와 달리 <code>zscore</code>의 <code>direction</code>은 <code>high/low</code>입니다.</div>
+  </div>
+
+  <h3>Phase 3 fact — 과거 인덱스 기반 <span class="pill ph3">후속</span></h3>
+  <div class="fact-card"><h4><code>baseline_dev</code> · 과거 동일시간대 대비 편차%</h4>
+    <div class="meta"><div>필수 params: measure <b><code>baseline</code></b>{days, same_hour…}</div><div>허용 op: <b><code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code></b></div><div>value 단위: <b>%</b></div><div>window 따름: <b>❌</b> (과거 N일 인덱스를 별도 쿼리)</div></div>
+    <div class="ex">"평소(과거 같은 시간대)보다 몇 % 벗어났나". 유일하게 현재 창이 아니라 과거 인덱스를 따로 조회합니다.</div>
+  </div>
+</section>
+
+<!-- ================= §5 fact 조건부 파라미터 ================= -->
+<section id="s5">
+  <h2><span class="sec-no">§5</span> fact 조건부 파라미터 — over·direction·mode·unit <span class="sec-sub">SCHEMA §1.3 / models.Fact</span></h2>
+  <p><code>facts[]</code> 항목은 <code>type</code> 외에 <b>type에 따라 필요한</b> 추가 파라미터를 가질 수 있습니다. 필요 없는 type에 넣으면 거부됩니다(<code>extra="forbid"</code>).</p>
+  <table>
+    <thead><tr><th>파라미터</th><th>타입/값</th><th>어떤 type에</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>over</code></td><td>float</td><td><code>spike_count</code>, <code>duration</code> (필수)</td><td>"사건"으로 셀 경계값(예: 90%)</td></tr>
+      <tr><td><code>direction</code></td><td>enum</td><td><code>spike_count</code>·<code>duration</code>: <code>above</code>/<code>below</code> · <code>zscore</code>: <code>high</code>/<code>low</code></td><td>경계를 어느 방향으로 넘겼는지</td></tr>
+      <tr><td><code>mode</code></td><td>enum</td><td><code>delta</code> (기본 <code>last_minus_first</code>)</td><td>변화량 계산법: <code>last_minus_first</code>/<code>max_minus_min</code></td></tr>
+      <tr><td><code>unit</code></td><td>enum</td><td><code>growth_rate</code> (기본 <code>per_hour</code>)</td><td>증가율 기준: <code>per_hour</code>/<code>per_day</code></td></tr>
+    </tbody>
+  </table>
+  <div class="note warn"><span class="tag">⚠️ direction 값이 type마다 다릅니다</span> <code>spike_count</code>·<code>duration</code>은 <b><code>above</code>/<code>below</code></b>, <code>zscore</code>는 <b><code>high</code>/<code>low</code></b>. 섞으면 거부됩니다.</div>
+<pre><span class="tok-com">// 조건부 파라미터 예시</span>
+{ <span class="tok-key">"type"</span>: <span class="tok-str">"spike_count"</span>, <span class="tok-key">"over"</span>: <span class="tok-num">90</span>, <span class="tok-key">"direction"</span>: <span class="tok-str">"above"</span> }
+{ <span class="tok-key">"type"</span>: <span class="tok-str">"duration"</span>,    <span class="tok-key">"over"</span>: <span class="tok-num">80</span>, <span class="tok-key">"direction"</span>: <span class="tok-str">"above"</span> }
+{ <span class="tok-key">"type"</span>: <span class="tok-str">"delta"</span>,       <span class="tok-key">"mode"</span>: <span class="tok-str">"last_minus_first"</span> }
+{ <span class="tok-key">"type"</span>: <span class="tok-str">"growth_rate"</span>, <span class="tok-key">"unit"</span>: <span class="tok-str">"per_hour"</span> }
+{ <span class="tok-key">"type"</span>: <span class="tok-str">"zscore"</span>,      <span class="tok-key">"direction"</span>: <span class="tok-str">"high"</span> }</pre>
+</section>
+
+<!-- ================= §6 rules ================= -->
+<section id="s6">
+  <h2><span class="sec-no">§6</span> rules — 언제 경보할까 + 평가 주기 <span class="sec-sub">SCHEMA §1.4</span></h2>
+  <p class="analogy">🚨 <b>판단한다</b> — rule은 measure가 만든 fact를 보고 "경보할지"를 정합니다. measure가 <b>창(window)</b>을 가졌다면, rule은 <b>주기(interval)</b>를 가집니다 — "얼마나 자주 판단하나".</p>
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td>문서 내 유일</td></tr>
+      <tr><td><code>interval_minutes</code></td><td>int</td><td class="c req">✓</td><td class="c">—</td><td>평가 주기(분). 스케줄 단위 = (process × rule)</td></tr>
+      <tr><td><code>severity</code></td><td>enum</td><td class="c req">✓</td><td class="c">—</td><td><code>WARNING</code> / <code>CRITICAL</code></td></tr>
+      <tr><td><code>combine</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>AND</code></td><td>여러 조건 결합: <code>AND</code> / <code>OR</code></td></tr>
+      <tr><td><code>when[]</code></td><td>array</td><td class="c req">✓</td><td class="c">—</td><td>조건 목록(최소 1개)</td></tr>
+      <tr><td><code>when[].fact</code></td><td>string</td><td class="c req">✓</td><td class="c">—</td><td><code>"measureId.type"</code>(예: <code>"cpu.p95"</code>)</td></tr>
+      <tr><td><code>when[].op</code></td><td>enum</td><td class="c req">✓</td><td class="c">—</td><td><code>&gt;=</code> <code>&gt;</code> <code>&lt;=</code> <code>&lt;</code> <code>==</code> <code>!=</code> <code>trend==</code></td></tr>
+      <tr><td><code>when[].value</code></td><td>float｜string</td><td class="c req">✓</td><td class="c">—</td><td>비교 기준값. <code>trend==</code>일 때만 문자열</td></tr>
+      <tr><td><code>when[].quantifier</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>any</code></td><td>인스턴스 정량화: <code>any</code>/<code>all</code>/<code>count</code></td></tr>
+      <tr><td><code>when[].count_min</code></td><td>int｜null</td><td class="c cond">조건부</td><td class="c"><code>null</code></td><td><code>quantifier=="count"</code>일 때 필수(≥1)</td></tr>
+      <tr><td><code>notify</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"default"</code></td><td><code>notify</code> 맵의 채널 이름</td></tr>
+      <tr><td><code>enabled</code></td><td>bool</td><td class="c opt">선택</td><td class="c"><code>true</code></td><td>이 rule 켜고 끄기. <code>false</code>면 엔진이 평가 스킵 + 스케줄 cadence에서 제외(profile.enabled와 별개)</td></tr>
+    </tbody>
+  </table>
+
+  <h3><code>when[].fact</code> 의 점 표기</h3>
+  <p><code>"cpu.p95"</code> = <b>점 앞</b>은 measure <code>id</code>, <b>점 뒤</b>는 그 measure가 선언한 fact <code>type</code>. 둘 다 실제로 존재해야 저장됩니다(<a href="#s9">검증 5</a>).</p>
+
+  <div class="note"><span class="tag">2단계 임계는 rule 2개로</span> WARNING 80 / CRITICAL 95 같은 2단계 경보는 같은 measure를 참조하는 <b>rule 2개</b>(<code>cpu_warn</code>, <code>cpu_crit</code>)로 표현합니다. measure를 늘리지 않는 정석입니다.</div>
+
+  <h4><code>combine</code> 으로 단순/복합 통일</h4>
+  <ul>
+    <li>조건 1개 = 단순 임계값. 조건 여러 개 + <code>combine</code> = 복합 조건.</li>
+    <li><code>AND</code>: 모든 조건이 동시에 참이어야 경보(예: <code>p95&gt;80</code> 그리고 <code>spike_count&gt;5</code> 그리고 <code>duration&gt;180</code>).</li>
+    <li><code>OR</code>: 하나라도 참이면 경보. <b>범위 이탈</b>(전압 등)은 단일 연산자가 아니라 두 조건 + <code>combine:"OR"</code> 입니다: <code>min &lt; 하한</code> OR <code>max &gt; 상한</code>.</li>
+  </ul>
+
+  <h3><code>when</code> 절 — 패턴별 작성 예시</h3>
+  <p>아래 예시는 모두 <a href="#s14">§14</a>·SCHEMA §12에 나오는 measure(<code>cpu</code>·<code>mem_free</code>·<code>disk</code>·<code>volt_vcore</code>·<code>proc_required</code>·<code>proc_forbidden</code>·<code>disk_health</code>·<code>mem_size</code>)를 참조한다고 가정합니다.</p>
+
+  <h4>① 단순 임계 — 조건 1개</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] }</pre>
+  <p class="opt">읽는 법: <b>cpu</b> measure의 <b>max</b> fact가 <b>80 이상</b>이면 경보. 조건이 1개면 <code>combine</code>은 영향 없음.</p>
+
+  <h4>② 2단계 임계(WARNING/CRITICAL) — 같은 fact, rule 2개</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] },
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_crit"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span> } ] }</pre>
+  <p class="opt">읽는 법: 임계 2단계는 measure를 늘리지 않고 <b>rule 2개</b>로. 80~95는 WARNING, 95↑는 CRITICAL.</p>
+
+  <h4>③ 복합 AND — 세 조건이 모두 참일 때</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_anomaly"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"AND"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.p95"</span>,         <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.spike_count"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">5</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.duration"</span>,    <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">180</span> }
+  ] }</pre>
+  <p class="opt">읽는 법: "대체로 높고(p95&gt;80) <b>그리고</b> 튐이 잦고(5회 초과) <b>그리고</b> 오래 지속(180초 초과)". 세 조건이 같은 <code>cpu</code> measure(같은 proc)를 참조하므로 <a href="#s9">검증 8</a> 통과.</p>
+
+  <h4>④ 범위 이탈 OR — 하한 미만 또는 상한 초과 (전압)</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"volt_out"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"OR"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"volt_vcore.min"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&lt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">1.1</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"volt_vcore.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">1.4</span> }
+  ] }</pre>
+  <p class="opt">읽는 법: 정상 범위 1.1~1.4V를 <b>벗어나면</b> 경보. 범위 이탈은 단일 연산자로 못 쓰고 두 조건 <code>OR</code>로 표현합니다.</p>
+
+  <h4>⑤ 정량자 — any / all / count (인스턴스 measure)</h4>
+<pre><span class="tok-com">// any: 디스크 파티션 중 하나라도 95%↑</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"disk.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> }
+<span class="tok-com">// all: 모든 파티션이 90%↑ 일 때만</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"disk.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">90</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"all"</span> }
+<span class="tok-com">// count: 온도 센서 3개 이상이 90℃↑ (count_min 필수)</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"temp.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">90</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"count"</span>, <span class="tok-key">"count_min"</span>: <span class="tok-num">3</span> }</pre>
+  <p class="opt">읽는 법: <code>expand:"instance"</code> measure는 인스턴스(<code>C:</code>·<code>D:</code>, 센서 여러 개)마다 fact를 만듭니다. 그 집합을 "하나라도/모두/N개 이상"으로 묶는 게 정량자입니다.</p>
+
+  <h4>⑥ 상태 점검 — min/max로 표현 (별도 type 없음)</h4>
+<pre><span class="tok-com">// 필수 프로세스 다운</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"proc_required.min"</span>,  <span class="tok-key">"op"</span>: <span class="tok-str">"=="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">0</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> }
+<span class="tok-com">// 금지 프로세스 실행</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"proc_forbidden.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>,  <span class="tok-key">"value"</span>: <span class="tok-num">0</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> }
+<span class="tok-com">// 디스크 건강 위험(PRED_FAIL=2 이상)</span>
+{ <span class="tok-key">"fact"</span>: <span class="tok-str">"disk_health.max"</span>,   <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">2</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> }</pre>
+  <p class="opt">읽는 법: 실행 여부(1/0)·상태값을 <code>min</code>/<code>max</code> + <code>==</code>/<code>&gt;</code>/<code>&gt;=</code>로 점검합니다(<a href="#s4">§4 상태 점검</a>).</p>
+
+  <h4>⑦ 추세 — <code>trend==</code> + 보조 조건 AND (메모리 누수)</h4>
+<pre>{ <span class="tok-key">"id"</span>: <span class="tok-str">"mem_leak"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"AND"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"mem_size.trend"</span>,       <span class="tok-key">"op"</span>: <span class="tok-str">"trend=="</span>, <span class="tok-key">"value"</span>: <span class="tok-str">"increasing"</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"mem_size.growth_rate"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>,       <span class="tok-key">"value"</span>: <span class="tok-num">52428800</span> }
+  ] }</pre>
+  <p class="opt">읽는 법: <code>trend==</code>만 <code>value</code>가 <b>문자열</b>(<code>"increasing"</code>). "증가 추세 <b>그리고</b> 시간당 50MB(52428800 byte) 초과 증가"면 누수로 판단.</p>
+
+  <h4>⑧ AND·OR 혼합 — 한 rule로는 불가, rule을 나눠서 표현</h4>
+  <div class="note danger"><span class="tag">❌ 한 rule 안에서 섞기 불가</span> <code>combine</code>은 <b>rule 하나당 값 하나</b>(<code>AND</code> 또는 <code>OR</code>)이고 그 rule의 <b>모든 조건에 똑같이</b> 적용됩니다. 조건별 그룹·괄호·중첩이 없으므로 <code>(A AND B) OR C</code> 같은 혼합식은 rule 하나로 못 만듭니다.</div>
+  <p>대신 식을 <b>"AND 묶음들의 OR"(DNF)</b>로 바꾼 뒤 <b>AND 묶음 하나 = rule 하나</b>로 나눕니다. 같은 <code>notify</code> 채널을 공유하는 rule들은 한 사건으로 묶이므로 <b>rule 간 OR</b>처럼 동작합니다.</p>
+<pre><span class="tok-com">// 원하는 논리: (cpu.p95 &gt; 80  그리고  cpu.spike_count &gt; 5)  또는  (cpu.avg &gt;= 95)</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_anomaly"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"AND"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.p95"</span>,         <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> },
+    { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.spike_count"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">5</span> }
+  ] },                                          <span class="tok-com">// ← AND 묶음 = rule A</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_avg_crit"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.avg"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span> } ] }  <span class="tok-com">// ← 단독 조건 = rule B</span></pre>
+  <p class="opt">읽는 법: rule A가 참이거나 rule B가 참이면 경보. A의 두 조건은 AND로, A·B 사이는 rule 분리로 OR. <code>(A OR B) AND C</code>처럼 OR이 안쪽이어도 분배법칙으로 <code>(A AND C) OR (B AND C)</code>로 풀어 rule 2개로 만듭니다.</p>
+  <div class="note warn"><span class="tag">⚠️ 반대 방향은 불가</span> 이 방식은 <b>OR</b>(어느 묶음이라도 참 → 경보)에만 통합니다. "여러 rule이 <b>동시에</b> 참일 때만 경보"하는 <b>rule 간 AND</b>는 표현할 수 없습니다 — rule은 각자 따로 발화하기 때문입니다. 동시 충족이 필요하면 그 조건들을 <b>한 rule에 <code>combine:"AND"</code></b>로 넣으세요(단, 모든 조건이 같은 <code>proc</code> 차원 measure 참조 — <a href="#s9">검증 8</a>).</div>
+
+  <h4>⑨ rule 끄고 켜기 — <code>enabled</code> (개별 on/off)</h4>
+  <p>rule 하나만 잠깐 끄고 싶을 때(시끄러운 경보 뮤트·점검 시간대·새 rule을 비활성으로 먼저 등록) <code>enabled:false</code>를 씁니다. profile 전체 스위치(<code>profile.enabled</code>)와 <b>별개</b>로 rule마다 적용됩니다. 끈 rule은 저장·검증은 그대로 되지만 엔진이 평가하지 않고 스케줄에서도 빠집니다.</p>
+<pre><span class="tok-com">// 이 rule만 비활성 — 저장은 되지만 발화하지 않음</span>
+{ <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"enabled"</span>: <span class="tok-bool">false</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+  <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] }</pre>
+  <p class="opt">읽는 법: 기본은 <code>true</code>(생략 가능). 끄려면 <code>"enabled": false</code>. 다시 켤 때 안전하도록 끈 rule도 참조 무결성은 그대로 검사합니다(<a href="#s9">§9</a>).</p>
+  <p><b>특정 장비에서만 상속 rule 끄기(소프트 tombstone)</b> — eqp overlay에서 같은 id의 rule을 <code>enabled:false</code>로 다시 적으면, cascade가 rule을 통째로 교체하므로 <b>그 장비에서만</b> 해당 rule이 꺼집니다(전역은 그대로).</p>
+<pre><span class="tok-com">// (*,*,*) 전역은 cpu_warn 켜짐. 아래 overlay 문서만 추가하면 EQP001에서만 뮤트</span>
+{
+  <span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"PHOTO"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"MODEL_A"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"EQP001"</span> },
+  <span class="tok-key">"rules"</span>: [
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"enabled"</span>: <span class="tok-bool">false</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] }
+  ]
+}</pre>
+  <p class="opt">읽는 법: 다른 장비는 전역 <code>cpu_warn</code>이 그대로 동작하고, EQP001만 이 rule이 꺼집니다. 상속 항목을 "통째로 삭제"하는 기능은 아직 없고(추후), 이 <code>enabled:false</code> 뮤트가 그 자리를 대신합니다(<a href="#s10">§10</a>).</p>
+
+  <h3>왜 measure가 window, rule이 interval을 갖나</h3>
+  <p>측정의 속성(얼마나 긴 구간을 보나)은 measure에, 판단의 속성(얼마나 자주 보나)은 rule에 둡니다. 같은 measure를 주기가 같은 여러 rule이 참조하면 엔진이 <b>한 번만 계산</b>해 공유합니다. 스케줄 단위는 <code>(process × interval)</code> 묶음입니다.</p>
+</section>
+
+<!-- ================= §7 연산자·정량자 ================= -->
+<section id="s7">
+  <h2><span class="sec-no">§7</span> 연산자(7) · 정량자(3) <span class="sec-sub">SCHEMA §3 / fact_catalog.ALLOWED_OPS</span></h2>
+
+  <h3>연산자 7종 <code>when[].op</code></h3>
+  <p><code>&gt;=</code> &nbsp; <code>&gt;</code> &nbsp; <code>&lt;=</code> &nbsp; <code>&lt;</code> &nbsp; <code>==</code> &nbsp; <code>!=</code> &nbsp; <code>trend==</code></p>
+  <ul>
+    <li><b>경보 방향</b>을 op로 표현합니다: 높을 때(<code>&gt;=</code>)·낮을 때(<code>&lt;=</code>)·상태(<code>==</code>)·아닐 때(<code>!=</code>).</li>
+    <li><code>trend==</code> 는 <code>trend</code> fact 전용이며 <code>value</code>가 문자열(<code>"increasing"</code> 등)입니다.</li>
+    <li>저장 시 <b>type↔op 적합성</b>을 검증합니다 — 예: <code>max</code>에 <code>&lt;=</code>는 거부, <code>trend</code>는 <code>trend==</code>만 허용(<a href="#s9">검증 5</a>).</li>
+  </ul>
+
+  <h4>type별 허용 연산자 매트릭스 (코드 <code>ALLOWED_OPS</code> 그대로)</h4>
+  <table>
+    <thead><tr><th>type ＼ op</th><th class="c">&gt;=</th><th class="c">&gt;</th><th class="c">&lt;=</th><th class="c">&lt;</th><th class="c">==</th><th class="c">!=</th><th class="c">trend==</th></tr></thead>
+    <tbody>
+      <tr><td><code>max</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>min</code></td><td class="c no">·</td><td class="c no">·</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>avg</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>last</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td></tr>
+      <tr><td><code>p50</code>/<code>p90</code>/<code>p95</code>/<code>p99</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>spike_count</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>duration</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>delta</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c yes">✓</td><td class="c no">·</td></tr>
+      <tr><td><code>growth_rate</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>moving_avg</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>trend</code></td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c yes">✓</td></tr>
+      <tr><td><code>zscore</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+      <tr><td><code>baseline_dev</code></td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c yes">✓</td><td class="c no">·</td><td class="c no">·</td><td class="c no">·</td></tr>
+    </tbody>
+  </table>
+
+  <h3>정량자 3종 <code>when[].quantifier</code></h3>
+  <p><code>expand:"instance"</code> measure(와일드카드 metric, 또는 proc별)는 장비마다 <b>fact 집합</b>을 만듭니다(디스크 <code>C:</code>/<code>D:</code>, 프로세스 여러 개 등). 그 집합을 "어떻게 묶어 판단할지"가 정량자입니다.</p>
+  <table>
+    <thead><tr><th>quantifier</th><th>의미</th><th>예</th></tr></thead>
+    <tbody>
+      <tr><td><code>any</code> (기본)</td><td>인스턴스 중 <b>하나라도</b> 충족</td><td>디스크 중 하나라도 95% 이상</td></tr>
+      <tr><td><code>all</code></td><td><b>모든</b> 인스턴스가 충족</td><td>모든 파티션이 가득</td></tr>
+      <tr><td><code>count</code> (+<code>count_min</code>)</td><td><b>N개 이상</b> 충족</td><td>센서 3개 이상 과열(<code>count_min:3</code>)</td></tr>
+    </tbody>
+  </table>
+  <div class="note warn"><span class="tag">⚠️ count_min</span> <code>quantifier=="count"</code>면 <code>count_min</code>이 반드시 있어야 하고 <b>1 이상</b>이어야 합니다. <code>count_min:0</code>은 "0개 이상"이라 항상 참 → 무조건 알림이 되어 거부됩니다(<a href="#s9">검증 7</a>).</div>
+</section>
+
+<!-- ================= §8 notify ================= -->
+<section id="s8">
+  <h2><span class="sec-no">§8</span> notify — 어떻게 알릴까 <span class="sec-sub">SCHEMA §1.5</span></h2>
+  <p class="analogy">📧 <b>알린다</b> — "이름 → 채널" 맵입니다. rule은 채널 이름(<code>notify</code> 필드)으로 참조해 중복을 없앱니다. 보통 <code>"default"</code> 하나면 충분합니다.</p>
+  <table>
+    <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td><code>notify.&lt;name&gt;.cooldown_minutes</code></td><td>int</td><td class="c req">✓</td><td class="c">—</td><td>같은 사건 재알림 억제 시간(Redis TTL)</td></tr>
+      <tr><td><code>notify.&lt;name&gt;.email_code</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"RESOURCE_MONITOR"</code></td><td><code>EMAIL_TEMPLATE_REPOSITORY</code> 매칭 코드</td></tr>
+      <tr><td><code>notify.&lt;name&gt;.email_subcode</code></td><td>string｜null</td><td class="c opt">선택</td><td class="c"><code>null</code></td><td><code>null</code>이면 <code>"{category}_{severity}"</code> 자동</td></tr>
+    </tbody>
+  </table>
+  <h3>cooldown(이메일 폭주 방지) 키</h3>
+  <p>같은 (장비, proc, 알림채널, 심각도) 단위로 재알림을 억제합니다. 키 형식:</p>
+<pre>{prefix}:cooldown:{process}:{eqpId}:{proc}:{notify}:{severity}</pre>
+  <p>같은 <code>notify</code> 채널을 공유하는 rule들은 한 사건으로 묶여 함께 억제됩니다.</p>
+<pre><span class="tok-key">"notify"</span>: {
+  <span class="tok-key">"default"</span>: { <span class="tok-key">"cooldown_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"email_code"</span>: <span class="tok-str">"RESOURCE_MONITOR"</span> }
+}</pre>
+</section>
+
+<!-- ================= §9 검증 규칙 ================= -->
+<section id="s9">
+  <h2><span class="sec-no">§9</span> 저장 시 검증 규칙 — 10가지 <span class="sec-sub">SCHEMA §5 / validate_effective</span></h2>
+  <p>프로파일을 저장할 때 아래 규칙을 검사하고, 위반하면 <b>거부</b>합니다(1~8). 9·10은 거부 대신 <b>경고(로그)</b>입니다. 검사 위치는 두 종류입니다 — <b>구조 검증</b>(문서 한 장 단위, Pydantic 모델)과 <b>참조·합성 검증</b>(여러 scope를 합친 effective profile, 위반 시 HTTP 422).</p>
+  <table>
+    <thead><tr><th class="c">#</th><th>규칙</th><th>무엇을 막나</th><th class="c">결과</th></tr></thead>
+    <tbody>
+      <tr><td class="c">1</td><td><b>measure id 유일</b> / 한 measure 내 <b>type 유일</b></td><td><code>measureId.type</code> 참조가 한 곳을 가리키도록(모호 참조 방지)</td><td class="c req">거부</td></tr>
+      <tr><td class="c">2</td><td>시간축 fact(<code>duration</code>/<code>growth_rate</code>/<code>moving_avg</code>/<code>trend</code>) 있으면 <code>bucketing</code> 필수, <code>moving_avg</code>/<code>trend</code>엔 <code>bucketing.points</code> 필수</td><td>버킷 정의 없이 시간축 계산 불가</td><td class="c req">거부</td></tr>
+      <tr><td class="c">3</td><td><code>bucketing.seconds × points ≤ window_minutes × 60</code></td><td>버킷이 창보다 커지는 모순</td><td class="c req">거부</td></tr>
+      <tr><td class="c">4</td><td><code>baseline_dev</code> 있으면 <code>baseline</code> 필수</td><td>기준선 없이 편차% 계산 불가</td><td class="c req">거부</td></tr>
+      <tr><td class="c">5</td><td>모든 <code>rule.when.fact="M.T"</code> → <b>M 존재</b>, <b>T가 M의 facts에 선언됨</b>, <b>op가 T에 허용</b>(<code>ALLOWED_OPS</code>)</td><td>없는 measure/fact 참조, 부적합 연산자</td><td class="c req">거부(422)</td></tr>
+      <tr><td class="c">6</td><td><code>rule.interval_minutes ≤ 참조 measure의 window_minutes</code></td><td>판단 주기가 측정창보다 길어 사건 누락</td><td class="c req">거부</td></tr>
+      <tr><td class="c">7</td><td><code>quantifier=="count"</code>엔 <code>count_min ≥ 1</code> 필수 / <code>rule.notify</code>가 <code>notify</code> 맵에 존재</td><td>무조건 알림(count_min 0), 없는 채널 참조</td><td class="c req">거부(422)</td></tr>
+      <tr><td class="c">8</td><td>한 rule의 모든 조건은 <b>동일 proc 차원</b> measure를 참조</td><td>서로 다른 proc을 AND로 묶어 영영 발화 못 하는 silent lost breach</td><td class="c req">거부(422)</td></tr>
+      <tr><td class="c">9</td><td>(lint) <b>dead fact</b> — 어떤 rule도 참조 않는 fact</td><td>오타·잔재 발견(무해하나 점검)</td><td class="c cond">경고</td></tr>
+      <tr><td class="c">10</td><td>(lint) <code>metric_kind=="gauge"</code>인데 <code>delta</code>/<code>growth_rate</code> 사용</td><td>변화량 fact를 gauge에 (보통 counter여야)</td><td class="c cond">경고</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><span class="tag">왜 합성 후 검증?</span> 참조 무결성(5·6·7·8)은 overlay 한 장이 아니라 <b>합성된 effective profile</b>에 적용합니다. overlay 문서만 보면 <code>cpu_crit</code>이 참조하는 <code>cpu</code> measure가 없어 보여도, 전역과 합치면 존재하기 때문입니다(<a href="#s10">§10</a>). 구조 검증(1~4)과 <code>count_min≥1</code>·값 타입은 문서 단위로 즉시 검사합니다.</div>
+  <div class="note"><span class="tag">비활성 rule도 검증</span> <code>enabled:false</code>인 rule도 위 검증을 <b>그대로</b> 받습니다(엄격). 끈 상태로 깨진 참조를 저장해 둘 수는 없으며, 그래서 다시 켜는 순간 항상 안전합니다. 단 interval-scope(§6.4)만은 <b>활성 rule</b>만 따집니다 — 비활성 rule이 새 주기를 들여와도 스케줄되지 않으므로 저장은 허용하고, 그 rule을 켤 때 검사합니다.</div>
+</section>
+
+<!-- ================= §10 scope 상속 ================= -->
+<section id="s10">
+  <h2><span class="sec-no">§10</span> scope 상속 — cascade(계층 합성) <span class="sec-sub">SCHEMA §6 / fold_profiles</span></h2>
+  <p>한 장비의 <b>유효 프로파일(effective profile)</b>은 그 장비에 매칭되는 scope 문서들을 <b>넓은 → 좁은 순으로 합성(fold)</b>한 결과입니다. 구체적 scope는 더 넓은 scope를 상속하고 "바꿀 것만" 담습니다(= <b>sparse overlay</b>).</p>
+
+  <h3>합성 순서 — 좁은 게 이김</h3>
+<pre>(*,*,*)  →  (process,*,*)  →  (process,model,*)  →  (process,model,eqpId)</pre>
+  <p>base에 overlay를 차례로 덮습니다. <code>uniq_scope</code> 인덱스 덕에 각 레벨 최대 1문서라 순서 모호성이 없습니다. 현재 운영은 대부분 <b>전역 + 가장 구체적 1개</b>의 2-레이어로 충족됩니다(YAGNI).</p>
+
+  <h3>합성 규칙 — key 기준 병합</h3>
+  <table>
+    <thead><tr><th>대상</th><th>병합 키</th><th>충돌 시</th></tr></thead>
+    <tbody>
+      <tr><td><code>measures</code></td><td><code>measure.id</code></td><td>구체 문서의 measure가 <b>통째로 교체</b></td></tr>
+      <tr><td><code>rules</code></td><td><code>rule.id</code></td><td>구체 문서의 rule이 <b>통째로 교체</b></td></tr>
+      <tr><td><code>notify</code></td><td>맵 이름</td><td>구체 문서의 채널이 <b>통째로 교체</b></td></tr>
+      <tr><td><code>enabled</code></td><td>—</td><td>한 레벨이라도 <code>false</code>면 비활성(AND, 안전측 실패)</td></tr>
+    </tbody>
+  </table>
+  <p>같은 key가 양쪽에 있으면 <b>구체 문서가 통째로 이깁니다</b>(필드 단위 부분 병합 없음 — 결정적·예측가능). 구체 문서에만 있는 key는 추가됩니다.</p>
+
+  <h3>sparse overlay 예시 — EQP001만 CPU 임계 95→85</h3>
+<pre><span class="tok-com">// (*,*,*) 전역 문서는 그대로 두고, 아래 문서만 추가</span>
+{
+  <span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"PHOTO"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"MODEL_A"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"EQP001"</span> },
+  <span class="tok-key">"rules"</span>: [
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_crit"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">85</span> } ] }
+  ]
+  <span class="tok-com">// measures/notify/그 외 rules는 전역 상속. cpu_crit가 참조하는 cpu measure도 전역에서 옴.</span>
+}</pre>
+
+  <h3>제약 (§6.4)</h3>
+  <ul>
+    <li><b>schedule/interval override는 process 레벨까지만.</b> 스케줄러는 process 레벨 effective의 interval 집합으로 <code>(process, interval)</code> job을 등록합니다. model/eqp overlay가 process에 <b>없는 새 interval</b>을 도입하면 API가 <b>422로 거부</b>합니다(<code>_check_interval_scope</code>) — 안 그러면 그 rule이 스케줄되지 않아 silent lost breach. 임계/value override는 eqp 레벨까지 가능합니다.</li>
+    <li>참조 무결성은 <b>합성된 effective profile</b>에서 검증합니다(<a href="#s9">§9</a>).</li>
+  </ul>
+  <div class="note danger"><span class="tag">❌ 절대 금지</span> 특정 장비 하나를 바꾸려고 <b>전역 설정을 통째로 복사</b>하지 마세요(함정 <a href="#s12">P9</a>). overlay엔 바꿀 measure/rule만 담고 나머지는 상속하게 둡니다 — 그래야 전역 변경이 자동 전파되고 드리프트가 없습니다.</div>
+  <div class="note"><span class="tag">소프트 tombstone</span> 상속된 rule을 특정 scope에서만 끄려면, overlay에서 같은 id의 rule을 <code>enabled:false</code>로 다시 적습니다("통째로 교체"라 enabled까지 교체됨). 상속 항목을 완전히 <b>삭제</b>하는 기능은 아직 없고(추후), 이 <code>enabled:false</code> 뮤트가 그 역할을 대신합니다(<a href="#s6">§6 예시 ⑨</a>).</div>
+</section>
+
+<!-- ================= §11 EARS 메트릭 카탈로그 ================= -->
+<section id="s11">
+  <h2><span class="sec-no">§11</span> EARS 메트릭 카탈로그 — 실제로 잴 수 있는 값 <span class="sec-sub">EARS-METRICS-REFERENCE.md</span></h2>
+  <p>measure의 <code>category</code>·<code>metric</code>·<code>proc</code>에 넣을 수 있는 <b>실제 값</b>입니다. 시스템 메트릭은 <code>proc=@system</code>, 프로세스 메트릭은 <code>proc={프로세스명}</code> 입니다. (수집되지만 트래픽 절감을 위해 전송하지 않는 항목은 EARS 레퍼런스 원본을 참고하세요.)</p>
+
+  <h3>시스템 메트릭 (proc=@system)</h3>
+  <div class="cat-grid">
+    <div class="cat"><h4>cpu</h4><span class="sys">시스템 CPU</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>total_used_pct</code></td><td>% (0~100)</td></tr>
+        <tr><td><code>core_{N}_used_pct</code></td><td>% 코어별</td></tr></table></div>
+    <div class="cat"><h4>memory</h4><span class="sys">메모리</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>total_used_pct</code></td><td>%</td></tr>
+        <tr><td><code>total_free_pct</code></td><td>%</td></tr>
+        <tr><td><code>total_used_size</code></td><td>bytes</td></tr></table></div>
+    <div class="cat"><h4>disk</h4><span class="sys">파티션별 1행</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>{Mountpoint}</code> (예 <code>C:</code>,<code>D:</code>)</td><td>% 사용률</td></tr></table></div>
+    <div class="cat"><h4>network</h4><span class="sys">@system + NIC별</span>
+      <table><tr><th>proc / metric</th><th>단위</th></tr>
+        <tr><td>@system <code>all_inbound</code></td><td>개</td></tr>
+        <tr><td>@system <code>all_outbound</code></td><td>개</td></tr>
+        <tr><td>{NIC} <code>recv_rate</code></td><td>bytes/s</td></tr>
+        <tr><td>{NIC} <code>sent_rate</code></td><td>bytes/s</td></tr></table></div>
+    <div class="cat"><h4>temperature</h4><span class="sys">CPU 온도 센서별</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>{센서이름}</code></td><td>°C</td></tr></table></div>
+    <div class="cat"><h4>fan</h4><span class="sys">팬 센서별</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>{팬이름}</code> (예 <code>CPU_Fan</code>)</td><td>RPM</td></tr></table></div>
+    <div class="cat"><h4>voltage</h4><span class="sys">전압 센서별</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>{센서이름}</code> (예 <code>CPU_Vcore</code>)</td><td>V</td></tr></table></div>
+    <div class="cat"><h4>motherboard_temp</h4><span class="sys">메인보드 온도</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>{센서이름}</code> (예 <code>System</code>)</td><td>°C</td></tr></table></div>
+    <div class="cat"><h4>gpu</h4><span class="sys">GPU별 필드당 1행</span>
+      <table><tr><th>metric 패턴</th><th>단위</th></tr>
+        <tr><td><code>{Name}_temperature</code></td><td>°C</td></tr>
+        <tr><td><code>{Name}_core_load</code></td><td>%</td></tr>
+        <tr><td><code>{Name}_memory_load</code></td><td>%</td></tr>
+        <tr><td><code>{Name}_fan_speed</code></td><td>RPM</td></tr>
+        <tr><td><code>{Name}_power</code></td><td>W</td></tr>
+        <tr><td><code>{Name}_core_clock</code></td><td>MHz</td></tr>
+        <tr><td><code>{Name}_memory_clock</code></td><td>MHz</td></tr></table></div>
+    <div class="cat"><h4>storage_smart</h4><span class="sys">스토리지별 필드당 1행</span>
+      <table><tr><th>metric 패턴</th><th>단위</th></tr>
+        <tr><td><code>{Name}_temperature</code></td><td>°C</td></tr>
+        <tr><td><code>{Name}_remaining_life</code></td><td>% 잔여수명</td></tr>
+        <tr><td><code>{Name}_media_errors</code></td><td>개</td></tr>
+        <tr><td><code>{Name}_power_cycles</code></td><td>회</td></tr>
+        <tr><td><code>{Name}_unsafe_shutdowns</code></td><td>회</td></tr>
+        <tr><td><code>{Name}_power_on_hours</code></td><td>시간</td></tr>
+        <tr><td><code>{Name}_total_bytes_written</code></td><td>bytes</td></tr></table></div>
+    <div class="cat"><h4>uptime</h4><span class="sys">가동 시간</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>boot_time_unix</code></td><td>Unix 초</td></tr>
+        <tr><td><code>uptime_minutes</code></td><td>분</td></tr></table></div>
+    <div class="cat"><h4>process_watch</h4><span class="sys">필수/금지 프로세스</span>
+      <table><tr><th>metric</th><th>value</th></tr>
+        <tr><td><code>required</code></td><td>1=실행,0=다운</td></tr>
+        <tr><td><code>forbidden</code></td><td>1=실행(위반),0</td></tr></table></div>
+    <div class="cat"><h4>agent</h4><span class="sys">ResourceAgent 자체 상태</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>goroutine_count</code></td><td>count</td></tr>
+        <tr><td><code>rss_bytes</code></td><td>bytes</td></tr>
+        <tr><td><code>heap_alloc_bytes</code></td><td>bytes</td></tr>
+        <tr><td><code>heap_sys_bytes</code></td><td>bytes</td></tr>
+        <tr><td><code>handle_count</code></td><td>count</td></tr>
+        <tr><td><code>buffer_count</code></td><td>records</td></tr>
+        <tr><td><code>buffer_dropped_total</code></td><td>records</td></tr></table></div>
+  </div>
+
+  <h3>프로세스 메트릭 (proc={프로세스명})</h3>
+  <div class="cat-grid">
+    <div class="cat"><h4>cpu</h4><span class="sys">프로세스별 CPU</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>used_pct</code></td><td>%</td></tr></table></div>
+    <div class="cat"><h4>memory</h4><span class="sys">프로세스별 메모리</span>
+      <table><tr><th>metric</th><th>단위</th></tr>
+        <tr><td><code>used</code></td><td>bytes (RSS)</td></tr>
+        <tr><td><code>used_pct</code></td><td>%</td></tr></table></div>
+    <div class="cat"><h4>storage_health</h4><span class="sys">디스크 건강 상태</span>
+      <table><tr><th>metric</th><th>value</th></tr>
+        <tr><td><code>{disk}_status</code></td><td>0=OK,1=DEGRADED,<br>2=PRED_FAIL,3=FAIL,-1=UNKNOWN</td></tr></table></div>
+  </div>
+  <div class="note"><span class="tag">category 필터는 필수</span> cpu와 memory 둘 다 <code>total_used_pct</code>가 있습니다. measure에 <code>category</code>를 지정해야 ES가 <code>EARS_CATEGORY.keyword</code>로 분리 집계해 혼입을 막습니다(함정 <a href="#s12">P7</a>).</div>
+</section>
+
+<!-- ================= §12 함정 ================= -->
+<section id="s12">
+  <h2><span class="sec-no">§12</span> 함정 9가지 (Pitfalls) <span class="sec-sub">SCHEMA §11</span></h2>
+  <table>
+    <thead><tr><th class="c">#</th><th>함정</th><th>올바른 사용</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><b>P1</b></td><td><code>scope.eqpModel</code> 카멜케이스</td><td>Mongo 키는 <code>eqpModel</code>(snake <code>eqp_model</code> 아님). Python은 <code>Scope</code> 객체로만 다루기</td></tr>
+      <tr><td class="c"><b>P2</b></td><td><code>scope.process</code> ≠ <code>measure.proc</code></td><td>전자=적용범위/파티션, 후자=EARS 행 정체성</td></tr>
+      <tr><td class="c"><b>P3</b></td><td><code>measureId.type</code> 점 표기</td><td>점 앞=measure id, 점 뒤=fact(=type). 둘 다 존재 강제</td></tr>
+      <tr><td class="c"><b>P4</b></td><td>한 measure에 같은 type 중복</td><td>금지(참조 모호). 다른 임계/창이 필요하면 measure 분리 또는 rule 분리</td></tr>
+      <tr><td class="c"><b>P5</b></td><td>임계가 measure·rule 두 곳에</td><td><code>spike_count.over</code>=사건 경계(measure), <code>rule.value</code>=경보 기준(rule). 의도된 계층</td></tr>
+      <tr><td class="c"><b>P6</b></td><td>경보 방향을 max로만</td><td>낮을 때는 <code>min</code>+<code>&lt;=</code>, 범위이탈은 두 조건 OR. type↔op 적합성 검증됨</td></tr>
+      <tr><td class="c"><b>P7</b></td><td>category 필터 누락</td><td>ES 쿼리에 <code>EARS_CATEGORY.keyword</code> term 필수(cpu/mem <code>total_used_pct</code> 혼입 방지)</td></tr>
+      <tr><td class="c"><b>P8</b></td><td>활성 필터 누락</td><td><code>EqpInfoRepository</code>만 사용(decommissioned/미관리 장비 제외)</td></tr>
+      <tr><td class="c"><b>P9</b></td><td>특정 장비 override 시 전역 통째 복사</td><td><b>금지</b>. overlay엔 바꿀 measure/rule만(나머지 상속). 전체 복사는 드리프트 유발</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ================= §13 Phase ================= -->
+<section id="s13">
+  <h2><span class="sec-no">§13</span> Phase 1·2·3 구분 — 지금 동작 vs 후속 <span class="sec-sub">SCHEMA §13·§14 / PHASE_OF_FACT</span></h2>
+  <p>스키마·검증은 16종 fact를 <b>모두</b> 받아들이지만, 실제 엔진이 평가하는 것은 현재 <b>Phase 1</b>뿐입니다. Phase 2/3 fact를 쓴 프로파일은 저장은 되지만 엔진이 <b>skip하고 경고 로그</b>를 남깁니다.</p>
+  <table>
+    <thead><tr><th class="c">Phase</th><th class="c">상태</th><th>fact</th><th>비고</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><span class="pill ph1">1</span></td><td class="c yes">구현완료(동작)</td><td><code>max</code> <code>min</code> <code>avg</code> <code>last</code> <code>p50</code> <code>p90</code> <code>p95</code> <code>p99</code> <code>spike_count</code></td><td>ES 집계→rule 평가→이메일까지 end-to-end. 상태점검은 min/max로 흡수</td></tr>
+      <tr><td class="c"><span class="pill ph2">2</span></td><td class="c cond">후속(skip+경고)</td><td><code>duration</code> <code>delta</code> <code>growth_rate</code> <code>moving_avg</code> <code>trend</code> <code>zscore</code></td><td>date_histogram·extended_stats·top_hits 인프라 필요</td></tr>
+      <tr><td class="c"><span class="pill ph3">3</span></td><td class="c cond">후속</td><td><code>baseline_dev</code></td><td>과거 N일 인덱스 별도 쿼리 필요</td></tr>
+    </tbody>
+  </table>
+  <p>운영에 실제 시드되는 기본 프로파일(<code>build_default_profile</code>)은 <b>Phase 1 fact만</b> 포함한 축소판입니다. 아래 §14 예시는 전 Phase를 포함한 목표 설계입니다.</p>
+</section>
+
+<!-- ================= §14 전체 JSON 예시 ================= -->
+<section id="s14">
+  <h2><span class="sec-no">§14</span> 전체 JSON 예시 (전 Phase 목표 프로파일) <span class="sec-sub">SCHEMA §12</span></h2>
+  <p>지금까지의 모든 항목이 한 문서에서 어떻게 맞물리는지 보여주는 전역 프로파일 예시입니다. Phase 2/3 fact는 스키마상 유효하지만 엔진은 아직 skip+경고합니다.</p>
+<pre>{
+  <span class="tok-key">"scope"</span>: { <span class="tok-key">"process"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"model"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> },
+  <span class="tok-key">"enabled"</span>: <span class="tok-bool">true</span>,
+  <span class="tok-key">"governance"</span>: { <span class="tok-key">"version"</span>: <span class="tok-num">1</span>, <span class="tok-key">"updated_by"</span>: <span class="tok-str">"system"</span>, <span class="tok-key">"change_reason"</span>: <span class="tok-str">"initial"</span> },
+
+  <span class="tok-key">"measures"</span>: [
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"cpu"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"total_used_pct"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+      <span class="tok-key">"window_minutes"</span>: <span class="tok-num">15</span>, <span class="tok-key">"metric_kind"</span>: <span class="tok-str">"gauge"</span>,
+      <span class="tok-key">"bucketing"</span>: { <span class="tok-key">"seconds"</span>: <span class="tok-num">30</span> },
+      <span class="tok-key">"baseline"</span>: { <span class="tok-key">"days"</span>: <span class="tok-num">7</span>, <span class="tok-key">"same_hour"</span>: <span class="tok-bool">true</span>, <span class="tok-key">"min_points"</span>: <span class="tok-num">30</span> },
+      <span class="tok-key">"facts"</span>: [
+        { <span class="tok-key">"type"</span>: <span class="tok-str">"max"</span> }, { <span class="tok-key">"type"</span>: <span class="tok-str">"avg"</span> }, { <span class="tok-key">"type"</span>: <span class="tok-str">"p95"</span> },
+        { <span class="tok-key">"type"</span>: <span class="tok-str">"spike_count"</span>, <span class="tok-key">"over"</span>: <span class="tok-num">90</span>, <span class="tok-key">"direction"</span>: <span class="tok-str">"above"</span> },
+        { <span class="tok-key">"type"</span>: <span class="tok-str">"duration"</span>, <span class="tok-key">"over"</span>: <span class="tok-num">80</span>, <span class="tok-key">"direction"</span>: <span class="tok-str">"above"</span> },
+        { <span class="tok-key">"type"</span>: <span class="tok-str">"baseline_dev"</span> }
+      ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"mem_free"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"memory"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"total_free_pct"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+      <span class="tok-key">"window_minutes"</span>: <span class="tok-num">15</span>, <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"min"</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"disk"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"disk"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"@system"</span>,
+      <span class="tok-key">"window_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"expand"</span>: <span class="tok-str">"instance"</span>, <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"max"</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"proc_required"</span>, <span class="tok-key">"category"</span>: <span class="tok-str">"process_watch"</span>, <span class="tok-key">"metric"</span>: <span class="tok-str">"required"</span>, <span class="tok-key">"proc"</span>: <span class="tok-str">"*"</span>,
+      <span class="tok-key">"window_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"expand"</span>: <span class="tok-str">"instance"</span>, <span class="tok-key">"facts"</span>: [ { <span class="tok-key">"type"</span>: <span class="tok-str">"min"</span> } ] }
+  ],
+
+  <span class="tok-key">"rules"</span>: [
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_warn"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"WARNING"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_crit"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"cpu_anomaly"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"combine"</span>: <span class="tok-str">"AND"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [
+        { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.p95"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">80</span> },
+        { <span class="tok-key">"fact"</span>: <span class="tok-str">"cpu.spike_count"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;"</span>, <span class="tok-key">"value"</span>: <span class="tok-num">5</span> }
+      ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"mem_low_free"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"mem_free.min"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&lt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">5</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"disk_full"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"disk.max"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"&gt;="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">95</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> } ] },
+    { <span class="tok-key">"id"</span>: <span class="tok-str">"proc_down"</span>, <span class="tok-key">"interval_minutes"</span>: <span class="tok-num">5</span>, <span class="tok-key">"severity"</span>: <span class="tok-str">"CRITICAL"</span>, <span class="tok-key">"notify"</span>: <span class="tok-str">"default"</span>,
+      <span class="tok-key">"when"</span>: [ { <span class="tok-key">"fact"</span>: <span class="tok-str">"proc_required.min"</span>, <span class="tok-key">"op"</span>: <span class="tok-str">"=="</span>, <span class="tok-key">"value"</span>: <span class="tok-num">0</span>, <span class="tok-key">"quantifier"</span>: <span class="tok-str">"any"</span> } ] }
+  ],
+
+  <span class="tok-key">"notify"</span>: {
+    <span class="tok-key">"default"</span>: { <span class="tok-key">"cooldown_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"email_code"</span>: <span class="tok-str">"RESOURCE_MONITOR"</span> }
+  }
+}</pre>
+  <p class="opt">전체(15개 measure·19개 rule, voltage 범위이탈 OR, mem_leak trend+growth_rate AND, ssd_err delta 등)는 SCHEMA.md §12 원문을 참고하세요.</p>
+</section>
+
+<footer>
+  <p>이 문서는 <code>SCHEMA.md</code>(1차 진실) · <code>EARS-METRICS-REFERENCE.md</code> · <code>src/db/models.py</code> · <code>src/analyzer/fact_catalog.py</code> 를 교차 확인해 작성했습니다. 추측으로 추가한 규칙은 없습니다.</p>
+  <p>값을 직접 만들어 보려면 → <a href="resource-monitor-profile-playground.html">설정 Playground</a>. 본문으로 → <a href="../SCHEMA.md">SCHEMA.md</a>.</p>
+</footer>
+</main>
+</div>
+
+<script>
+/* 자가검증용 필수 포함 항목 체크리스트.
+ * Playwright가 이 목록의 각 키워드가 document.body.innerText 에 실제로
+ * 렌더되어 있는지 검사한다(이 <script> 텍스트는 innerText에 포함되지 않음).
+ * window.__coverageCheck() → { total, missing: [...] } */
+window.__SCHEMA_GUIDE_COVERAGE = [
+  // 4계층 + 흐름
+  "scope","measures","rules","notify","scope로 대상 결정","enabled","governance",
+  // scope 3필드 + alias
+  "scope.process","eqpModel","eqpId","eqp_model","model",
+  // measure 전 필드
+  "category","metric","proc","window_minutes","group_by","expand","metric_kind",
+  "bucketing","baseline","facts",
+  "bucketing.seconds","points","days","same_hour","min_points","deviation_floor",
+  "scalar","instance","gauge","counter","cumulative",
+  // fact 16종
+  "max","min","avg","last","p50","p90","p95","p99","spike_count",
+  "duration","delta","growth_rate","moving_avg","trend","zscore","baseline_dev",
+  // fact 조건부 param
+  "over","direction","mode","unit","last_minus_first","max_minus_min",
+  "per_hour","per_day","above","below","high","low",
+  // rule 전 필드
+  "interval_minutes","severity","WARNING","CRITICAL","combine","AND","OR",
+  "when","fact","op","value","quantifier","count_min","rule.enabled","소프트 tombstone",
+  // 연산자 7 + 정량자 3
+  ">=",">","<=","<","==","!=","trend==","any","all","count",
+  // notify
+  "cooldown_minutes","email_code","email_subcode",
+  // 검증 규칙 1~10 (각 규칙 식별 문구)
+  "measure id 유일","시간축 fact","bucketing.seconds × points","baseline_dev",
+  "ALLOWED_OPS","interval_minutes ≤","count_min ≥ 1","동일 proc","dead fact",
+  // scope cascade
+  "sparse overlay","통째로 교체","process 레벨까지만","_check_interval_scope",
+  // EARS category 전부 + 대표 metric
+  "cpu","memory","disk","network","temperature","fan","voltage",
+  "motherboard_temp","gpu","storage_smart","storage_health","process_watch",
+  "uptime","agent",
+  "total_used_pct","total_free_pct","recv_rate","core_load","remaining_life",
+  "media_errors","required","forbidden","used_pct","used","_status",
+  // 함정 P1~P9
+  "P1","P2","P3","P4","P5","P6","P7","P8","P9",
+  // Phase 구분
+  "Phase 1","Phase 2","Phase 3"
+];
+window.__coverageCheck = function () {
+  var text = document.body.innerText || "";
+  var list = window.__SCHEMA_GUIDE_COVERAGE;
+  var missing = [];
+  for (var i = 0; i < list.length; i++) {
+    if (text.indexOf(list[i]) === -1) missing.push(list[i]);
+  }
+  return { total: list.length, missing: missing, ok: missing.length === 0 };
+};
+</script>
+</body>
+</html>

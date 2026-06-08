@@ -32,6 +32,11 @@ class AppSettings(BaseSettings):
     es_use_ssl: bool = False
     es_request_timeout: int = 30
     es_max_retries: int = 3
+    # EARS_* 문자열 필드는 운영에서 text + `.keyword` 서브필드로 매핑됨 → term/terms
+    # 필터와 terms aggregation은 `.keyword`를 타야 한다. 혹시 bare keyword로
+    # 매핑된 클러스터면 ""로 설정해 bare 필드명을 쓴다. (EARS_VALUE/EARS_TIMESTAMP는
+    # 숫자/날짜라 미적용 — src/es/queries.py 참고)
+    es_keyword_suffix: str = ".keyword"
 
     # MongoDB (EARS DB shared with Akka)
     mongo_uri: SecretStr = SecretStr("mongodb://localhost:27017")
@@ -82,8 +87,8 @@ class AppSettings(BaseSettings):
 
     # ─── Debug Read-Only ──────────────────────────────────────────────
     # True 면 RMS 가 production 인프라에 대해 "관찰자" 로만 동작한다:
-    #   - init_repos: create_index 스킵 (schema 변경 없음)
-    #   - seed_default_profile 스킵 (config 변경 없음)
+    #   - init_repos: create_collection + create_index 스킵 (schema 변경 없음)
+    #     → 컬렉션은 scripts/create-profile-collection.ps1 로 수동 생성
     #   - init_distributed / leader_election 스킵 (ZK 참여 없음)
     #   - scheduler 는 정상 기동 (분석 흐름 관찰 가능)
     #   - cooldown set/clear 는 local TTLCache 만 사용 (Redis 쓰기 없음)

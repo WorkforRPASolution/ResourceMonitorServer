@@ -35,6 +35,9 @@ htmlcov/
 .hypothesis/
 coverage.xml
 *.cover
+.playwright-mcp/
+docs/_xcheck_data.json
+docs/_xcheck_playground.json
 
 # IDE
 .vscode/

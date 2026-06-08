@@ -19,8 +19,9 @@ SELF_ALERT_MODEL = "self"
 SELF_ALERT_LINE = "self"
 
 # MongoDB collection names (EARS DB — confirmed no collision with existing 7)
+# v2: single collection — rules live inside RESOURCE_MONITOR_PROFILE documents
+# (the former COLL_RULE / RESOURCE_MONITOR_RULE collection was dropped).
 COLL_PROFILE = "RESOURCE_MONITOR_PROFILE"
-COLL_RULE = "RESOURCE_MONITOR_RULE"
 COLL_EQP_INFO = "EQP_INFO"  # read-only, managed by Akka server
 
 # ZK paths (appended to settings.zk_root_path)

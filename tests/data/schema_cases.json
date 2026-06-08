@@ -1,0 +1,230 @@
+{
+  "_meta": {
+    "schema_ref": "SCHEMA.md §5 (검증 규칙) + §2 (type 카탈로그 허용 op) + §3 (연산자)",
+    "phase": 1,
+    "description": "RESOURCE_MONITOR_PROFILE §5 검증 3-way 대조 케이스 (expected는 SCHEMA를 직접 인용해 사람이 라벨링한 정답)",
+    "ops_tested": [">=", ">", "<=", "<", "==", "!="],
+    "allowed_by_schema": {
+      "_source": "SCHEMA.md §2 카탈로그 '허용 op' 열 (Phase 1 fact)",
+      "max": [">", ">="],
+      "min": ["<", "<=", "=="],
+      "avg": [">", ">=", "<", "<="],
+      "last": [">", ">=", "<", "<=", "==", "!="],
+      "p50": [">", ">=", "<", "<="],
+      "p90": [">", ">=", "<", "<="],
+      "p95": [">", ">=", "<", "<="],
+      "p99": [">", ">=", "<", "<="],
+      "spike_count": [">", ">="]
+    },
+    "phase1_fact_types": ["max", "min", "avg", "last", "p50", "p90", "p95", "p99", "spike_count"],
+    "playground_fact_support": ["max", "min", "avg", "p95", "spike_count"],
+    "playground_gap_note": "playground는 단일 measure만 처리(measures[0])하고 quantifier/count_min·last/p50/p90/p99·spike_count param 누락은 검증하지 않음 → 해당 케이스는 playground_supports=false(GAP)"
+  },
+
+  "cases": [
+    {
+      "id": "normal_max_ge",
+      "ref": "정상 baseline",
+      "desc": "CPU max >= 80 (가장 흔한 정상 프로파일)",
+      "expected": "valid",
+      "expected_violations": [],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "cpu_warn", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "normal_spike_count",
+      "ref": "정상 baseline",
+      "desc": "spike_count(over/direction) > 5 정상",
+      "expected": "valid",
+      "expected_violations": [],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "spike_count", "over": 90, "direction": "above"}]}],
+        "rules": [{"id": "spk", "interval_minutes": 5, "severity": "CRITICAL", "when": [{"fact": "cpu.spike_count", "op": ">", "value": 5}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "ref_measure_missing",
+      "ref": "§5.5",
+      "desc": "rule이 존재하지 않는 measure 'ghost'를 참조",
+      "expected": "invalid",
+      "expected_violations": ["§5.5"],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "ghost.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "ref_fact_undeclared",
+      "ref": "§5.5",
+      "desc": "measure는 max만 선언했는데 rule이 cpu.min 참조",
+      "expected": "invalid",
+      "expected_violations": ["§5.5"],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.min", "op": "<=", "value": 5}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "interval_lt_window",
+      "ref": "§5.6",
+      "desc": "interval(14) < window(15) — 정상",
+      "expected": "valid",
+      "expected_violations": [],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 14, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "interval_eq_window",
+      "ref": "§5.6",
+      "desc": "interval(15) == window(15) — 경계, 허용(≤)",
+      "expected": "valid",
+      "expected_violations": [],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 15, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "interval_gt_window",
+      "ref": "§5.6",
+      "desc": "interval(16) > window(15) — 사건 누락 위험, 거부",
+      "expected": "invalid",
+      "expected_violations": ["§5.6"],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 16, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "dup_fact_type",
+      "ref": "§5.1",
+      "desc": "한 measure 안에 max를 두 번 선언",
+      "expected": "invalid",
+      "expected_violations": ["§5.1"],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}, {"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "dup_measure_id",
+      "ref": "§5.1",
+      "desc": "measure id 'cpu'가 두 번 — 다중 measure (playground 미지원=GAP)",
+      "expected": "invalid",
+      "expected_violations": ["§5.1"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [
+          {"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]},
+          {"id": "cpu", "category": "memory", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "min"}]}
+        ],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "notify_missing",
+      "ref": "§5.7",
+      "desc": "rule.notify='ghost'인데 notify 맵에 없음",
+      "expected": "invalid",
+      "expected_violations": ["§5.7"],
+      "playground_supports": true,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.max", "op": ">=", "value": 80}], "notify": "ghost"}]
+      }
+    },
+    {
+      "id": "count_no_min",
+      "ref": "§5.7",
+      "desc": "quantifier=count인데 count_min 없음 (playground 미지원=GAP)",
+      "expected": "invalid",
+      "expected_violations": ["§5.7"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [{"id": "disk", "category": "disk", "metric": "*", "proc": "@system", "window_minutes": 30, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 10, "severity": "WARNING", "when": [{"fact": "disk.max", "op": ">=", "value": 95, "quantifier": "count"}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "count_min_zero",
+      "ref": "§5.7",
+      "desc": "quantifier=count, count_min=0 (무조건 발화 → 거부, GAP)",
+      "expected": "invalid",
+      "expected_violations": ["§5.7"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [{"id": "disk", "category": "disk", "metric": "*", "proc": "@system", "window_minutes": 30, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 10, "severity": "WARNING", "when": [{"fact": "disk.max", "op": ">=", "value": 95, "quantifier": "count", "count_min": 0}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "count_min_valid",
+      "ref": "§5.7",
+      "desc": "quantifier=count, count_min=2 — 정상 (playground 미지원이지만 valid=GAP)",
+      "expected": "valid",
+      "expected_violations": [],
+      "playground_supports": false,
+      "profile": {
+        "measures": [{"id": "disk", "category": "disk", "metric": "*", "proc": "@system", "window_minutes": 30, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "r", "interval_minutes": 10, "severity": "WARNING", "when": [{"fact": "disk.max", "op": ">=", "value": 95, "quantifier": "count", "count_min": 2}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "proc_mismatch",
+      "ref": "§5.8",
+      "desc": "한 rule이 proc='@system'과 proc='*' measure를 함께 참조 (AND) — GAP",
+      "expected": "invalid",
+      "expected_violations": ["§5.8"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [
+          {"id": "sys_cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "max"}]},
+          {"id": "proc_mem", "category": "memory", "metric": "used", "proc": "*", "window_minutes": 15, "facts": [{"type": "max"}]}
+        ],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "combine": "AND", "when": [{"fact": "sys_cpu.max", "op": ">=", "value": 80}, {"fact": "proc_mem.max", "op": ">=", "value": 80}], "notify": "default"}]
+      }
+    },
+
+    {
+      "id": "spike_no_over",
+      "ref": "§1.3 (Fact 필수 param)",
+      "desc": "spike_count인데 over 누락 (구조 검증 거부, playground 미검증=GAP)",
+      "expected": "invalid",
+      "expected_violations": ["§1.3"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "spike_count", "direction": "above"}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.spike_count", "op": ">", "value": 5}], "notify": "default"}]
+      }
+    },
+    {
+      "id": "spike_no_direction",
+      "ref": "§1.3 (Fact 필수 param)",
+      "desc": "spike_count인데 direction 누락 (구조 검증 거부, GAP)",
+      "expected": "invalid",
+      "expected_violations": ["§1.3"],
+      "playground_supports": false,
+      "profile": {
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct", "proc": "@system", "window_minutes": 15, "facts": [{"type": "spike_count", "over": 90}]}],
+        "rules": [{"id": "r", "interval_minutes": 5, "severity": "WARNING", "when": [{"fact": "cpu.spike_count", "op": ">", "value": 5}], "notify": "default"}]
+      }
+    }
+  ]
+}

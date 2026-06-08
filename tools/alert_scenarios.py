@@ -11,12 +11,13 @@ from types import SimpleNamespace
 from src.alert.models import EmailAlertRequest
 from src.analyzer.alert_builder import build_alert_request
 from src.analyzer.threshold import ThresholdBreach
+from src.db.models import NotifyChannel
 
-# scenario → (metric, current, threshold, severity, metric_pattern)
-_SCENARIOS: dict[str, tuple[str, float, float, str, str]] = {
-    "cpu": ("total_used_pct", 92.0, 80.0, "WARNING", "cpu"),
-    "disk": ("disk_c_pct", 98.0, 95.0, "CRITICAL", "disk_usage"),
-    "process": ("required", 0.0, 1.0, "CRITICAL", "proc_watch"),
+# scenario → (fact, current, threshold, severity, category, op)
+_SCENARIOS: dict[str, tuple[str, float, float, str, str, str]] = {
+    "cpu": ("cpu.max", 92.0, 80.0, "WARNING", "cpu", ">="),
+    "disk": ("disk.max", 98.0, 95.0, "CRITICAL", "disk", ">="),
+    "process": ("proc_required.min", 0.0, 0.0, "CRITICAL", "process_watch", "=="),
 }
 
 # 샘플 설비 정보 (EQP_INFO 에서 읽어오는 필드들과 동일한 키)
@@ -42,10 +43,14 @@ def build_alert(scenario: str, app_name: str) -> EmailAlertRequest:
             f"unknown scenario: {scenario!r} (choices: {sorted(_SCENARIOS)})"
         )
 
-    metric, current, threshold, severity, metric_pattern = _SCENARIOS[scenario]
+    fact, current, threshold, severity, category, op = _SCENARIOS[scenario]
     breach = ThresholdBreach(
         eqp_id="DEV-EQP-01",
-        metric=metric,
+        proc="@system",
+        rule_id=f"{scenario}_demo",
+        fact=fact,
+        category=category,
+        op=op,
         current_value=current,
         threshold_value=threshold,
         severity=severity,
@@ -60,6 +65,6 @@ def build_alert(scenario: str, app_name: str) -> EmailAlertRequest:
         eqp_info=_SAMPLE_EQP_INFO,
         process="DEV_PROC",
         settings=settings,
-        metric_pattern=metric_pattern,
+        notify=NotifyChannel(cooldown_minutes=_WINDOW_MINUTES),
         window_minutes=_WINDOW_MINUTES,
     )

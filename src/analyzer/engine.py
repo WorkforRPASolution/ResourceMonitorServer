@@ -1,30 +1,32 @@
-"""Analysis engine — Phase 1 orchestration coroutine.
+"""Analysis engine — v2 per-equipment orchestration coroutine.
 
-Ties together: ES query → threshold comparison → cooldown check → email alert.
-Called by AnalysisScheduler's APScheduler jobs via _job_wrapper.
+One job tick covers a (process, interval) pair. The engine resolves the
+**effective** profile *per equipment* (fixing the v1 dead path where only the
+process-level profile was ever consulted, so model/eqp overrides never reached
+alerts), buckets equipment by identical effective profile so each distinct
+profile costs one ES query set, then runs the measure→fact→rule pipeline:
+
+    measure (잰다)  → ES aggregation over EARS_VALUE → facts
+    rule (판단)     → op/quantifier/combine over facts → breach
+    notify (알린다) → cooldown check → email
+
+Phase 2/3 fact types are schema-accepted but engine-skipped (logged), so a rule
+referencing only unimplemented facts simply never fires.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 
-from src.analyzer.alert_builder import (
-    build_alert_request,
-    classify_metric_category,
-    group_breaches_by_equipment,
-)
+from src.analyzer import fact_catalog as fc
+from src.analyzer.alert_builder import build_alert_request, make_cooldown_key
 from src.analyzer.es_parser import parse_metric_aggregation
-from src.analyzer.metric_resolver import get_agg_type, resolve_metric_patterns
-from src.analyzer.threshold import (
-    AnalysisResult,
-    ThresholdBreach,
-    evaluate_state_check,
-    evaluate_thresholds,
-)
+from src.analyzer.metric_resolver import resolve_metric_patterns
+from src.analyzer.threshold import AnalysisResult, ThresholdBreach, evaluate_rule
 from src.api.metrics import (
     ALERTS_SENT,
     ALERTS_SUPPRESSED,
@@ -32,166 +34,219 @@ from src.api.metrics import (
     THRESHOLD_BREACHES,
 )
 from src.config.settings import AppSettings
-from src.db.models import AnalysisConfig
+from src.db.models import Measure, MonitorProfile, NotifyChannel, Rule
 
 logger = structlog.get_logger(__name__)
 
 
+class _Pending(NamedTuple):
+    """A fired breach plus the context needed to cool it down and alert."""
+
+    breach: ThresholdBreach
+    notify_name: str
+    channel: NotifyChannel
+    window_minutes: int
+
+
 class AnalysisEngine:
-    """Orchestrates a single analysis run for a (process, config) pair."""
+    """Orchestrates one analysis tick for a (process, interval) pair."""
 
     def __init__(self, deps: Any, settings: AppSettings) -> None:
         self._deps = deps
         self._settings = settings
         self._es_semaphore = asyncio.Semaphore(3)
 
-    async def run_analysis(
-        self, process: str, config: AnalysisConfig
-    ) -> AnalysisResult:
-        metric_pattern = config.metric_pattern
-        window = config.schedule.window_minutes
-
+    async def run_analysis(self, process: str, interval_minutes: int) -> AnalysisResult:
+        """Public entry: lock the process, then run every rule whose
+        ``interval_minutes`` matches this tick, across all active equipment."""
         async with self._deps.zk_lock.acquire(process), self._es_semaphore:
-            return await self._do_analysis(process, config, metric_pattern, window)
+            return await self._do_analysis(process, interval_minutes)
 
-    async def _do_analysis(
-        self,
-        process: str,
-        config: AnalysisConfig,
-        metric_pattern: str,
-        window: int,
-    ) -> AnalysisResult:
+    async def _do_analysis(self, process: str, interval_minutes: int) -> AnalysisResult:
         now = datetime.now(UTC)
 
-        # 1. Bulk fetch active equipment
-        equipment_list = await self._deps.eqp_info_repo.get_active_equipment_by_process(process)
-        eqp_lookup: dict[str, dict[str, Any]] = {
-            doc["eqpId"]: doc for doc in equipment_list
-        }
+        # 1. active equipment for this process
+        equipment = await self._deps.eqp_info_repo.get_active_equipment_by_process(process)
+        eqp_lookup: dict[str, dict[str, Any]] = {d["eqpId"]: d for d in equipment}
+        if not equipment:
+            return AnalysisResult(process=process, breaches=[], total_evaluated=0, timestamp=now)
 
-        # 2. Resolve metric pattern wildcards
-        index_pattern = self._deps.query_builder.resolve_index_range(process, window)
-        available_fields = await self._deps.es.get_numeric_field_names(index_pattern)
-        resolved = resolve_metric_patterns([metric_pattern], available_fields)
-        matched_fields = resolved.get(metric_pattern, [])
-
-        if not matched_fields:
-            logger.warning(
-                "metric_pattern_no_match",
-                process=process,
-                pattern=metric_pattern,
-                available_count=len(available_fields),
+        # 2. resolve the effective profile per equipment; bucket by signature so
+        #    equipment sharing a profile is analysed with one query set.
+        buckets: dict[str, dict[str, Any]] = {}
+        for doc in equipment:
+            profile = await self._deps.profile_repo.resolve_profile(
+                process, doc.get("eqpModel", "*"), doc["eqpId"]
             )
-            return AnalysisResult(
-                process=process,
-                metric_pattern=metric_pattern,
-                breaches=[],
-                total_evaluated=0,
-                timestamp=now,
+            if profile is None or not profile.enabled:
+                continue
+            sig = profile.effective_signature()
+            bucket = buckets.setdefault(sig, {"profile": profile, "eqp_ids": []})
+            bucket["eqp_ids"].append(doc["eqpId"])
+
+        # 3. evaluate each bucket
+        pending: list[_Pending] = []
+        rule_ids: set[str] = set()
+        for bucket in buckets.values():
+            profile: MonitorProfile = bucket["profile"]
+            eqp_ids: list[str] = bucket["eqp_ids"]
+            rules = [
+                r
+                for r in profile.rules
+                if r.interval_minutes == interval_minutes and r.enabled
+            ]
+            if not rules:
+                continue
+            await self._evaluate_bucket(
+                process, now, profile, rules, eqp_ids, pending, rule_ids
             )
 
-        # 3. Determine agg types per field
-        agg_types = {f: get_agg_type(metric_pattern, f) for f in matched_fields}
-        # For state_check fields, use min for required, max for forbidden
-        es_agg_types: dict[str, str] = {}
-        state_check_fields: list[str] = []
-        threshold_fields: list[str] = []
-        for f, at in agg_types.items():
-            if at == "state_check":
-                state_check_fields.append(f)
-                es_agg_types[f] = "min" if f == "required" else "max"
-            else:
-                threshold_fields.append(f)
-                es_agg_types[f] = at
-
-        # 4. Build and execute ES query
-        body = self._deps.query_builder.build_metric_aggregation_query(
-            now, window, matched_fields, es_agg_types, process=process
-        )
-        t0 = time.monotonic()
-        response = await self._deps.es.client.search(index=index_pattern, body=body)
-        ES_QUERY_DURATION.labels(process=process).observe(time.monotonic() - t0)
-
-        # 5. Parse response
-        eqp_metrics = parse_metric_aggregation(response, matched_fields, es_agg_types)
-
-        # 6. Evaluate thresholds and state checks
-        breaches: list[ThresholdBreach] = []
-        if threshold_fields:
-            breaches.extend(
-                evaluate_thresholds(eqp_metrics, config.threshold, threshold_fields)
-            )
-        for f in state_check_fields:
-            expected = 1.0 if f == "required" else 0.0
-            breaches.extend(evaluate_state_check(eqp_metrics, f, expected))
-
-        # 7. Record breach metrics
-        for b in breaches:
+        # 4. breach metrics
+        for p in pending:
             THRESHOLD_BREACHES.labels(
-                process=process, metric=b.metric, severity=b.severity
+                process=process, metric=p.breach.fact, severity=p.breach.severity
             ).inc()
 
-        if not breaches:
-            return AnalysisResult(
-                process=process,
-                metric_pattern=metric_pattern,
-                breaches=[],
-                total_evaluated=len(eqp_metrics),
-                timestamp=now,
-            )
-
-        # 8. Group by equipment and batch cooldown check
-        grouped = group_breaches_by_equipment(breaches)
-        cooldown_checks: list[tuple[str, str, str]] = []
-        for eqp_id, eqp_breaches in grouped.items():
-            for b in eqp_breaches:
-                category = classify_metric_category(metric_pattern, b.metric)
-                cooldown_checks.append((eqp_id, category, b.metric))
-
-        cooldown_status = await self._deps.cooldown_mgr.is_cooling_down_batch(
-            cooldown_checks
-        )
-
-        # 9. Send alerts for non-cooled-down equipment
-        for eqp_id, eqp_breaches in grouped.items():
-            eqp_info = eqp_lookup.get(eqp_id)
-            if eqp_info is None:
-                logger.debug("eqp_not_in_lookup", eqp_id=eqp_id, process=process)
-                continue
-
-            # Use the highest-severity breach for the email
-            worst = max(
-                eqp_breaches,
-                key=lambda b: (0 if b.severity == "WARNING" else 1),
-            )
-            category = classify_metric_category(metric_pattern, worst.metric)
-            cooldown_key = (eqp_id, category, worst.metric)
-
-            if cooldown_status.get(cooldown_key, False):
-                for b in eqp_breaches:
-                    ALERTS_SUPPRESSED.labels(
-                        process=process, metric=b.metric, severity=b.severity
-                    ).inc()
-                continue
-
-            alert = build_alert_request(
-                worst, eqp_info, process, self._settings,
-                metric_pattern, window,
-            )
-            sent = await self._deps.email_client.send_alert(alert)
-            if sent:
-                await self._deps.cooldown_mgr.set_cooldown(
-                    eqp_id, category, worst.metric,
-                    config.threshold.cooldown_minutes,
-                )
-                ALERTS_SENT.labels(
-                    code=alert.code, subcode=alert.subcode
-                ).inc()
+        breaches = [p.breach for p in pending]
+        if pending:
+            await self._dispatch(process, pending, eqp_lookup)
 
         return AnalysisResult(
             process=process,
-            metric_pattern=metric_pattern,
+            rule_ids=sorted(rule_ids),
             breaches=breaches,
-            total_evaluated=len(eqp_metrics),
+            total_evaluated=len(equipment),
             timestamp=now,
         )
+
+    # ------------------------------------------------------------------
+    async def _evaluate_bucket(
+        self,
+        process: str,
+        now: datetime,
+        profile: MonitorProfile,
+        rules: list[Rule],
+        eqp_ids: list[str],
+        pending: list[_Pending],
+        rule_ids: set[str],
+    ) -> None:
+        measures_by_id = {m.id: m for m in profile.measures}
+        category = {m.id: m.category for m in profile.measures}
+
+        # compute every measure referenced by the rules in this tick (once)
+        referenced = {
+            cond.fact.partition(".")[0] for rule in rules for cond in rule.when
+        }
+        results: dict[str, dict[tuple[str, str], dict[str, list]]] = {}
+        for mid in referenced:
+            measure = measures_by_id.get(mid)
+            if measure is not None:
+                results[mid] = await self._compute_measure(process, now, measure, eqp_ids)
+
+        for rule in rules:
+            rule_ids.add(rule.id)
+            ref = {cond.fact.partition(".")[0] for cond in rule.when}
+            targets: set[tuple[str, str]] = set()
+            for mid in ref:
+                targets |= set(results.get(mid, {}).keys())
+            for eqp_id, proc in targets:
+                facts_by_ref = {
+                    cond.fact: results.get(
+                        cond.fact.partition(".")[0], {}
+                    ).get((eqp_id, proc), {}).get(cond.fact.partition(".")[2], [])
+                    for cond in rule.when
+                }
+                breach = evaluate_rule(
+                    rule, facts_by_ref, eqp_id=eqp_id, proc=proc, measure_category=category
+                )
+                if breach is None:
+                    continue
+                channel = profile.notify.get(rule.notify)
+                if channel is None:
+                    logger.warning(
+                        "notify_channel_missing", rule=rule.id, notify=rule.notify
+                    )
+                    continue
+                trigger_mid = breach.fact.partition(".")[0]
+                window = measures_by_id[trigger_mid].window_minutes
+                pending.append(_Pending(breach, rule.notify, channel, window))
+
+    async def _compute_measure(
+        self, process: str, now: datetime, measure: Measure, eqp_ids: list[str]
+    ) -> dict[tuple[str, str], dict[str, list]]:
+        """Run one measure's ES aggregation and parse it to per-(eqp, proc) facts."""
+        impl_facts = [f for f in measure.facts if fc.is_implemented(f.type)]
+        skipped = [f.type.value for f in measure.facts if not fc.is_implemented(f.type)]
+        if skipped:
+            logger.warning(
+                "fact_phase_not_implemented", measure=measure.id, facts=skipped
+            )
+        if not impl_facts:
+            return {}
+
+        index = self._deps.query_builder.resolve_index_range(
+            process, measure.window_minutes, now=now
+        )
+        expand = measure.expand == "instance"
+        if expand:
+            names = await self._deps.es.get_metric_names(
+                index, measure.category, measure.proc
+            )
+            metrics = resolve_metric_patterns([measure.metric], names).get(
+                measure.metric, []
+            )
+            if not metrics:
+                return {}
+        else:
+            metrics = [measure.metric]
+
+        body = self._deps.query_builder.build_metric_aggregation_query(
+            now,
+            window_minutes=measure.window_minutes,
+            category=measure.category,
+            metrics=metrics,
+            proc=measure.proc,
+            facts=impl_facts,
+            expand_instance=expand,
+            eqp_ids=eqp_ids,
+        )
+        t0 = time.monotonic()
+        resp = await self._deps.es.client.search(index=index, body=body)
+        ES_QUERY_DURATION.labels(process=process).observe(time.monotonic() - t0)
+        return parse_metric_aggregation(
+            resp, impl_facts, proc=measure.proc, expand_instance=expand
+        )
+
+    async def _dispatch(
+        self,
+        process: str,
+        pending: list[_Pending],
+        eqp_lookup: dict[str, dict[str, Any]],
+    ) -> None:
+        """Cooldown-gate and send one email per (eqp, proc, notify, severity)."""
+        checks = list({
+            make_cooldown_key(process, p.breach, p.notify_name) for p in pending
+        })
+        cooling = await self._deps.cooldown_mgr.is_cooling_down_batch(checks)
+
+        sent: set[tuple[str, str, str, str, str]] = set()
+        for p in pending:
+            eqp_info = eqp_lookup.get(p.breach.eqp_id)
+            if eqp_info is None:
+                logger.debug("eqp_not_in_lookup", eqp_id=p.breach.eqp_id, process=process)
+                continue
+            key = make_cooldown_key(process, p.breach, p.notify_name)
+            if cooling.get(key, False) or key in sent:
+                ALERTS_SUPPRESSED.labels(
+                    process=process, metric=p.breach.fact, severity=p.breach.severity
+                ).inc()
+                continue
+            alert = build_alert_request(
+                p.breach, eqp_info, process, self._settings, p.channel, p.window_minutes
+            )
+            if await self._deps.email_client.send_alert(alert):
+                await self._deps.cooldown_mgr.set_cooldown(
+                    *key, p.channel.cooldown_minutes
+                )
+                sent.add(key)
+                ALERTS_SENT.labels(code=alert.code, subcode=alert.subcode).inc()

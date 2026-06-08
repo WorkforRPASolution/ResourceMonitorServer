@@ -78,20 +78,25 @@ async def admin_status(
     return response
 
 
-@router.delete("/cooldowns/{eqp_id}/{category}/{metric}")
+@router.delete("/cooldowns")
 async def clear_cooldown(
+    process: str,
     eqp_id: str,
-    category: str,
-    metric: str,
+    notify: str,
+    severity: str,
+    proc: str = "@system",
     cooldown_mgr: Any = Depends(deps.get_cooldown_manager),
 ) -> dict[str, str]:
-    """Manually clear an alert cooldown.
+    """Manually clear an alert cooldown (v2 5-dim identity).
 
-    Useful when an operator has fixed an issue and wants the next breach to
-    page immediately, rather than waiting for the cooldown window to expire.
+    Query params carry the cooldown identity
+    ``(process, eqp_id, proc, notify, severity)`` — they are query (not path)
+    params because ``proc`` can be ``@system`` / ``*``, which are path-hostile.
+    Useful when an operator has fixed an issue and wants the next breach to page
+    immediately, rather than waiting for the cooldown window to expire.
     """
-    await cooldown_mgr.clear_cooldown(eqp_id, category, metric)
-    return {"cleared": f"{eqp_id}:{category}:{metric}"}
+    await cooldown_mgr.clear_cooldown(process, eqp_id, proc, notify, severity)
+    return {"cleared": f"{process}:{eqp_id}:{proc}:{notify}:{severity}"}
 
 
 @router.post("/scheduler/reload")

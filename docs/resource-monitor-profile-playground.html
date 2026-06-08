@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>설비 모니터링 설정 가이드 &amp; Playground (RESOURCE_MONITOR_PROFILE)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#30363d;
+    --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --accent2:#79c0ff;
+    --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff;
+    --chip:#21262d;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    font-size:14px; line-height:1.6;
+  }
+  code,.mono,pre{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;}
+
+  header{
+    padding:22px 28px 18px; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#161b22,#0d1117);
+  }
+  header h1{margin:0 0 6px; font-size:20px;}
+  header p{margin:0; color:var(--muted); font-size:13px;}
+  .flow{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;}
+  .flow .node{
+    background:var(--chip); border:1px solid var(--border); border-radius:8px;
+    padding:7px 12px; font-size:12.5px; display:flex; align-items:center; gap:7px;
+  }
+  .flow .node b{color:var(--accent2);}
+  .flow .arrow{color:var(--muted); align-self:center; font-size:13px;}
+
+  .wrap{display:grid; grid-template-columns:1fr 0.92fr; gap:0; align-items:start;}
+  @media(max-width:1080px){.wrap{grid-template-columns:1fr;}}
+
+  .left{padding:22px 28px 60px;}
+  .right{
+    position:sticky; top:0; height:100vh; overflow:auto;
+    border-left:1px solid var(--border); background:var(--panel);
+    padding:22px 24px 40px;
+  }
+  @media(max-width:1080px){.right{position:static; height:auto; border-left:none; border-top:1px solid var(--border);}}
+
+  .card{
+    background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:18px 18px 16px; margin-bottom:18px;
+  }
+  .card-head{display:flex; align-items:center; gap:11px; margin-bottom:4px;}
+  .step-badge{
+    flex:none; width:30px; height:30px; border-radius:50%;
+    background:var(--accent); color:#08111f; font-weight:700; font-size:15px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .card-head h2{margin:0; font-size:16px;}
+  .card-head .sub{color:var(--muted); font-size:12px; margin-left:auto;}
+  .analogy{
+    background:var(--panel2); border-left:3px solid var(--accent);
+    border-radius:0 8px 8px 0; padding:9px 13px; margin:10px 0 16px;
+    font-size:13px; color:#aeb9c4;
+  }
+  .analogy b{color:var(--accent2);}
+
+  .field{margin-bottom:13px;}
+  .field > label{display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px;}
+  .field .hint{font-size:11.5px; color:#6e7681; margin-top:4px;}
+  input[type=text],input[type=number],select{
+    width:100%; background:#0d1117; color:var(--text);
+    border:1px solid var(--border); border-radius:7px; padding:8px 10px;
+    font-size:13px; outline:none;
+  }
+  input:focus,select:focus{border-color:var(--accent);}
+  .row{display:grid; gap:10px;}
+  .row.c3{grid-template-columns:1fr 1fr 1fr;}
+  .row.c2{grid-template-columns:1fr 1fr;}
+
+  .list-item{
+    background:var(--panel2); border:1px solid var(--border); border-radius:9px;
+    padding:11px 12px; margin-bottom:10px;
+  }
+  .list-item .li-grid{display:grid; gap:8px; align-items:end;}
+  .li-title{font-size:11.5px; color:var(--muted); margin-bottom:7px; display:flex; align-items:center;}
+  .li-title .del{margin-left:auto;}
+
+  button{font-family:inherit; cursor:pointer;}
+  .btn-add{
+    background:transparent; color:var(--accent); border:1px dashed var(--border);
+    border-radius:7px; padding:7px 12px; font-size:12.5px; width:100%;
+  }
+  .btn-add:hover{border-color:var(--accent); background:#0d1117;}
+  .del{
+    background:transparent; border:none; color:var(--red); font-size:12px;
+    padding:2px 6px; border-radius:5px;
+  }
+  .del:hover{background:rgba(248,81,73,.12);}
+
+  /* right panel */
+  .right h3{margin:0 0 10px; font-size:14px; display:flex; align-items:center; gap:8px;}
+  .out-head{display:flex; align-items:center; margin-bottom:12px;}
+  .out-head h3{margin:0;}
+  .copy-btn{
+    margin-left:auto; background:var(--accent); color:#08111f; border:none;
+    border-radius:7px; padding:8px 16px; font-size:13px; font-weight:600;
+  }
+  .copy-btn:hover{background:var(--accent2);}
+  .copy-feedback{
+    margin-left:10px; color:var(--green); font-size:12.5px; font-weight:600;
+    opacity:0; transition:opacity .15s;
+  }
+  .copy-feedback.show{opacity:1;}
+  pre#json-output{
+    background:#0d1117; border:1px solid var(--border); border-radius:10px;
+    padding:15px; margin:0; font-size:12.5px; line-height:1.55;
+    white-space:pre; overflow:auto; max-height:48vh;
+  }
+  .json-key{color:var(--accent2);}
+  .json-str{color:#a5d6ff;}
+  .json-num{color:#f0883e;}
+  .json-bool{color:var(--purple);}
+  .json-null{color:var(--muted);}
+
+  #validation{margin-top:16px;}
+  .v-box{border-radius:9px; padding:11px 13px; font-size:12.8px; margin-bottom:9px;}
+  .v-ok{background:rgba(63,185,80,.10); border:1px solid rgba(63,185,80,.4); color:#7ee787;}
+  .v-err{background:rgba(248,81,73,.10); border:1px solid rgba(248,81,73,.45); color:#ffa198;}
+  .v-warn{background:rgba(210,153,34,.10); border:1px solid rgba(210,153,34,.45); color:#e3b341;}
+  .v-box .v-list{margin:6px 0 0; padding-left:18px;}
+  .v-box .v-list li{margin-bottom:4px;}
+  .v-title{font-weight:700; display:flex; align-items:center; gap:6px;}
+
+  .preset-bar{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px;}
+  .preset-bar .lbl{color:var(--muted); font-size:12px; align-self:center; margin-right:2px;}
+  .preset{
+    background:var(--chip); border:1px solid var(--border); color:var(--text);
+    border-radius:20px; padding:6px 13px; font-size:12px;
+  }
+  .preset:hover{border-color:var(--accent); color:var(--accent2);}
+  .tag{display:inline-block; background:var(--chip); border:1px solid var(--border);
+    border-radius:5px; padding:1px 6px; font-size:11px; color:var(--muted);}
+</style>
+</head>
+<body>
+<header>
+  <h1>🖥️ 설비 모니터링 설정 가이드 &amp; Playground</h1>
+  <p>코딩을 몰라도 괜찮습니다. 아래 4단계를 채우면 우측에 실제 모니터링 설정(<span class="mono">RESOURCE_MONITOR_PROFILE</span>)이 자동으로 만들어집니다.</p>
+  <div class="flow">
+    <div class="node">1 <b>누구에게</b> (scope)</div>
+    <span class="arrow">→</span>
+    <div class="node">2 <b>무엇을 잰다</b> (measures)</div>
+    <span class="arrow">→</span>
+    <div class="node">3 <b>언제 경보</b> (rules)</div>
+    <span class="arrow">→</span>
+    <div class="node">4 <b>어떻게 알림</b> (notify)</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- ================= LEFT : FORM ================= -->
+  <div class="left">
+
+    <div class="preset-bar">
+      <span class="lbl">빠른 예시:</span>
+      <button class="preset" data-preset="cpu" id="preset-cpu">CPU 과부하 경고</button>
+      <button class="preset" data-preset="mem" id="preset-mem">메모리 부족 경고</button>
+      <button class="preset" data-preset="disk" id="preset-disk">디스크 가득참</button>
+      <button class="preset" data-preset="proc" id="preset-proc">필수 프로그램 종료</button>
+    </div>
+
+    <!-- STEP 1 : scope -->
+    <div class="card" data-step="scope">
+      <div class="card-head">
+        <div class="step-badge">1</div>
+        <h2>누구에게 적용할까요? <span class="mono" style="font-size:12px;color:var(--muted)">scope</span></h2>
+      </div>
+      <div class="analogy">
+        🎯 <b>"누구에게"</b> — 이 설정을 <b>어느 장비</b>에 적용할지 정합니다.
+        병원에서 "전체 환자" 또는 "특정 환자 1명"에게 처방하듯,
+        <span class="tag">*</span> 는 <b>전체</b>를 뜻합니다. 잘 모르겠으면 그대로 두세요(전체 장비 적용).
+      </div>
+      <div class="row c3">
+        <div class="field">
+          <label>공정 (process)</label>
+          <input type="text" id="scope-process" value="*">
+        </div>
+        <div class="field">
+          <label>설비 모델 (eqpModel)</label>
+          <input type="text" id="scope-model" value="*">
+        </div>
+        <div class="field">
+          <label>설비 번호 (eqpId)</label>
+          <input type="text" id="scope-eqpid" value="*">
+        </div>
+      </div>
+      <div class="hint">예) 특정 설비만: 공정 <span class="mono">PHOTO</span>, 설비 <span class="mono">EQP001</span>. 전체 적용은 모두 <span class="mono">*</span>.</div>
+    </div>
+
+    <!-- STEP 2 : measures -->
+    <div class="card" data-step="measures">
+      <div class="card-head">
+        <div class="step-badge">2</div>
+        <h2>무엇을 잴까요? <span class="mono" style="font-size:12px;color:var(--muted)">measures</span></h2>
+      </div>
+      <div class="analogy">
+        🌡️ <b>"잰다"</b> — 어떤 <b>온도계</b>를 어디에 꽂을지 고르는 단계입니다.
+        측정 항목(예: CPU 사용률)을 정하고, <b>최근 몇 분(window)</b>을 볼지,
+        그 구간에서 <b>어떤 값(최댓값·평균 등)</b>을 뽑을지 정합니다.
+      </div>
+      <div class="field">
+        <label>측정 항목 이름 (나중에 규칙이 이 이름으로 부릅니다)</label>
+        <input type="text" id="measure-id" value="cpu">
+      </div>
+      <div class="row c2">
+        <div class="field">
+          <label>무엇을 (category)</label>
+          <select id="measure-category"></select>
+        </div>
+        <div class="field">
+          <label>세부 항목 (metric)</label>
+          <input type="text" id="measure-metric" value="total_used_pct" list="metric-list">
+          <datalist id="metric-list"></datalist>
+        </div>
+      </div>
+      <div class="row c2">
+        <div class="field">
+          <label>대상 (proc)</label>
+          <input type="text" id="measure-proc" value="@system">
+          <div class="hint">시스템 전체는 <span class="mono">@system</span>. 특정 프로그램이면 프로그램명.</div>
+        </div>
+        <div class="field">
+          <label>관찰 구간 (window, 분)</label>
+          <input type="number" id="measure-window" value="15" min="1">
+          <div class="hint">최근 몇 분을 모아서 볼지.</div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:6px;">
+        <label>뽑아낼 값 (facts) — 잰 데이터에서 무엇을 계산할까요?</label>
+        <div id="facts-list"></div>
+        <button class="btn-add" id="add-fact">＋ 값 추가</button>
+        <div class="hint">최댓값(max)·최솟값(min)·평균(avg)·상위값(p95)·급증횟수(spike_count) 중 선택.</div>
+      </div>
+    </div>
+
+    <!-- STEP 3 : rules -->
+    <div class="card" data-step="rules">
+      <div class="card-head">
+        <div class="step-badge">3</div>
+        <h2>언제 경보할까요? <span class="mono" style="font-size:12px;color:var(--muted)">rules</span></h2>
+      </div>
+      <div class="analogy">
+        🚨 <b>"판단한다"</b> — 잰 값이 <b>어떤 선을 넘으면</b> 경보를 울릴지 정하는 단계입니다.
+        "체온이 38도를 넘으면 알림"처럼, <b>측정값(2단계의 값) + 비교 + 기준 숫자</b>로 조건을 만듭니다.
+        조건을 2개 이상 넣으면 <b>모두 만족(AND)</b> 또는 <b>하나라도 만족(OR)</b>을 고를 수 있어요.
+      </div>
+      <div class="field">
+        <label>규칙 이름</label>
+        <input type="text" id="rule-id" value="cpu_warn">
+      </div>
+      <div class="field">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text);">
+          <input type="checkbox" id="rule-enabled" checked style="width:auto; margin:0;">
+          이 규칙 사용 (enabled)
+        </label>
+        <div class="hint">끄면 저장은 되지만 평가·스케줄에서 제외됩니다 (규칙 개별 on/off).</div>
+      </div>
+      <div class="row c3">
+        <div class="field">
+          <label>평가 주기 (interval, 분)</label>
+          <input type="number" id="rule-interval" value="5" min="1">
+          <div class="hint">몇 분마다 검사할지.</div>
+        </div>
+        <div class="field">
+          <label>심각도 (severity)</label>
+          <select id="rule-severity">
+            <option value="WARNING">WARNING (경고)</option>
+            <option value="CRITICAL">CRITICAL (심각)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>조건 결합 (combine)</label>
+          <select id="rule-combine">
+            <option value="AND">AND (모두 만족)</option>
+            <option value="OR">OR (하나라도)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:6px;">
+        <label>경보 조건 (when)</label>
+        <div id="when-list"></div>
+        <button class="btn-add" id="add-when">＋ 조건 추가</button>
+        <div class="hint">예) <span class="mono">cpu.max</span> 가 <span class="mono">&gt;=</span> <span class="mono">80</span> 이면 경보.</div>
+      </div>
+
+      <div class="field">
+        <label>사용할 알림 채널 (notify)</label>
+        <select id="rule-notify">
+          <option value="default">default</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- STEP 4 : notify -->
+    <div class="card" data-step="notify">
+      <div class="card-head">
+        <div class="step-badge">4</div>
+        <h2>어떻게 알릴까요? <span class="mono" style="font-size:12px;color:var(--muted)">notify</span></h2>
+      </div>
+      <div class="analogy">
+        📧 <b>"알린다"</b> — 경보가 발생하면 <b>어떻게 메일을 보낼지</b> 정합니다.
+        같은 경보가 계속 울리면 메일 폭탄이 되니, <b>재알림 간격(cooldown)</b>을 두어
+        "한 번 알린 뒤 N분 동안은 다시 안 보냄"으로 조용히 만듭니다.
+      </div>
+      <div class="row c2">
+        <div class="field">
+          <label>재알림 간격 (cooldown, 분)</label>
+          <input type="number" id="notify-cooldown" value="30" min="0">
+          <div class="hint">한 번 알린 뒤 이 시간 동안은 같은 경보를 다시 안 보냅니다.</div>
+        </div>
+        <div class="field">
+          <label>이메일 템플릿 코드 (email_code)</label>
+          <input type="text" id="notify-emailcode" value="RESOURCE_MONITOR">
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= RIGHT : OUTPUT ================= -->
+  <div class="right">
+    <div class="out-head">
+      <h3>📄 생성된 설정 (JSON)</h3>
+      <button class="copy-btn" id="copy-btn">복사</button>
+      <span class="copy-feedback" id="copy-feedback">✓ 복사됨!</span>
+    </div>
+    <pre id="json-output"></pre>
+
+    <div id="validation"></div>
+
+    <div style="margin-top:18px; color:var(--muted); font-size:12px; line-height:1.7;">
+      <b style="color:var(--text)">💡 사용법</b><br>
+      이 JSON을 복사해 모니터링 관리자(또는 등록 API)에게 전달하면 설정이 적용됩니다.
+      우측 아래 <b style="color:#7ee787">초록</b>이면 정상, <b style="color:#ffa198">빨강</b>이면 고쳐야 할 점이 있다는 뜻입니다.
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   데이터 정의 — SCHEMA.md(§2 type 카탈로그, §3 연산자) + EARS 메트릭 레퍼런스
+   Phase 1 fact 중심: max / min / avg / p95 / spike_count
+   ========================================================================= */
+const FACT_TYPES = {
+  max:        { label:"최댓값 (max)",        ops:[">",">="],               needsOver:false },
+  min:        { label:"최솟값 (min)",        ops:["<","<=","=="],          needsOver:false },
+  avg:        { label:"평균 (avg)",          ops:[">",">=","<","<="],      needsOver:false },
+  p95:        { label:"상위값 95% (p95)",    ops:[">",">=","<","<="],      needsOver:false },
+  spike_count:{ label:"급증 횟수 (spike_count)", ops:[">",">="],          needsOver:true  },
+};
+const ALL_OPS = [">=", ">", "<=", "<", "==", "!="];
+
+// category → metric 추천 (EARS-METRICS-REFERENCE.md 기준)
+const CATEGORIES = {
+  cpu:            ["total_used_pct","core_0_used_pct","used_pct"],
+  memory:         ["total_used_pct","total_free_pct","total_used_size","used","used_pct"],
+  disk:           ["C:","D:","*"],
+  temperature:    ["*","CPU_Package"],
+  fan:            ["*","CPU_Fan"],
+  voltage:        ["CPU_Vcore"],
+  gpu:            ["*_core_load","*_temperature","*_memory_load"],
+  network:        ["recv_rate","sent_rate","all_inbound","all_outbound"],
+  storage_smart:  ["*_remaining_life","*_media_errors"],
+  storage_health: ["*_status"],
+  process_watch:  ["required","forbidden"],
+};
+
+/* =========================================================================
+   상태 (state) — 모든 컨트롤이 여기에 쓰고, 모든 렌더가 여기서 읽음
+   ========================================================================= */
+let state = {};
+function defaultState(){
+  return {
+    scope:{ process:"*", eqpModel:"*", eqpId:"*" },
+    measure:{ id:"cpu", category:"cpu", metric:"total_used_pct", proc:"@system", window_minutes:15,
+              facts:[ {type:"max", over:90, direction:"above"} ] },
+    rule:{ id:"cpu_warn", interval_minutes:5, severity:"WARNING", combine:"AND",
+           when:[ {fact:"cpu.max", op:">=", value:80} ], notify:"default", enabled:true },
+    notify:{ cooldown_minutes:30, email_code:"RESOURCE_MONITOR" },
+  };
+}
+
+/* 프리셋 */
+const PRESETS = {
+  cpu:{ measure:{id:"cpu",category:"cpu",metric:"total_used_pct",proc:"@system",window_minutes:15,facts:[{type:"max",over:90,direction:"above"}]},
+        rule:{id:"cpu_warn",interval_minutes:5,severity:"WARNING",combine:"AND",when:[{fact:"cpu.max",op:">=",value:80}],notify:"default"} },
+  mem:{ measure:{id:"mem_free",category:"memory",metric:"total_free_pct",proc:"@system",window_minutes:15,facts:[{type:"min",over:90,direction:"above"}]},
+        rule:{id:"mem_low_free",interval_minutes:5,severity:"CRITICAL",combine:"AND",when:[{fact:"mem_free.min",op:"<=",value:5}],notify:"default"} },
+  disk:{ measure:{id:"disk",category:"disk",metric:"C:",proc:"@system",window_minutes:30,facts:[{type:"max",over:90,direction:"above"}]},
+        rule:{id:"disk_full",interval_minutes:30,severity:"CRITICAL",combine:"AND",when:[{fact:"disk.max",op:">=",value:95}],notify:"default"} },
+  proc:{ measure:{id:"proc_required",category:"process_watch",metric:"required",proc:"mes_client.exe",window_minutes:5,facts:[{type:"min",over:90,direction:"above"}]},
+        rule:{id:"proc_down",interval_minutes:5,severity:"CRITICAL",combine:"AND",when:[{fact:"proc_required.min",op:"==",value:0}],notify:"default"} },
+};
+
+/* =========================================================================
+   초기화
+   ========================================================================= */
+function init(){
+  state = defaultState();
+  // category 드롭다운 채우기
+  const catSel = document.getElementById('measure-category');
+  catSel.innerHTML = Object.keys(CATEGORIES).map(c=>`<option value="${c}">${c}</option>`).join('');
+  bindStaticInputs();
+  bindButtons();
+  syncFormFromState();
+  renderFacts();
+  renderWhen();
+  refreshMetricList();
+  updateOutput();
+}
+
+/* 정적 input 바인딩 (텍스트/숫자/select) → state만 갱신 후 출력만 다시 그림 */
+function bindStaticInputs(){
+  const map = [
+    ['scope-process', v=>state.scope.process=v],
+    ['scope-model',   v=>state.scope.eqpModel=v],
+    ['scope-eqpid',   v=>state.scope.eqpId=v],
+    ['measure-id',    v=>state.measure.id=v],
+    ['measure-metric',v=>state.measure.metric=v],
+    ['measure-proc',  v=>state.measure.proc=v],
+    ['measure-window',v=>state.measure.window_minutes=numOr(v,0)],
+    ['rule-id',       v=>state.rule.id=v],
+    ['rule-interval', v=>state.rule.interval_minutes=numOr(v,0)],
+    ['rule-severity', v=>state.rule.severity=v],
+    ['rule-combine',  v=>state.rule.combine=v],
+    ['rule-notify',   v=>state.rule.notify=v],
+    ['notify-cooldown',v=>state.notify.cooldown_minutes=numOr(v,0)],
+    ['notify-emailcode',v=>state.notify.email_code=v],
+  ];
+  map.forEach(([id,fn])=>{
+    const el=document.getElementById(id);
+    el.addEventListener('input', ()=>{ fn(el.value); updateOutput(); });
+    el.addEventListener('change', ()=>{ fn(el.value); updateOutput(); });
+  });
+  // category 변경은 metric 추천 갱신 동반
+  document.getElementById('measure-category').addEventListener('change', e=>{
+    state.measure.category=e.target.value;
+    refreshMetricList();
+    updateOutput();
+  });
+  // rule enabled 체크박스 (checkbox라 .checked 별도 처리)
+  document.getElementById('rule-enabled').addEventListener('change', e=>{
+    state.rule.enabled = e.target.checked;
+    updateOutput();
+  });
+}
+
+function bindButtons(){
+  document.getElementById('add-fact').addEventListener('click', ()=>{
+    const used = state.measure.facts.map(f=>f.type);
+    const next = Object.keys(FACT_TYPES).find(t=>!used.includes(t)) || 'max';
+    state.measure.facts.push({type:next, over:90, direction:"above"});
+    renderFacts(); updateOutput();
+  });
+  document.getElementById('add-when').addEventListener('click', ()=>{
+    const opts = factHandles();
+    state.rule.when.push({fact:opts[0]||"", op:">=", value:0});
+    renderWhen(); updateOutput();
+  });
+  document.getElementById('copy-btn').addEventListener('click', copyJson);
+  document.querySelectorAll('.preset').forEach(btn=>{
+    btn.addEventListener('click', ()=>applyPreset(btn.dataset.preset));
+  });
+}
+
+function applyPreset(key){
+  const p = PRESETS[key]; if(!p) return;
+  state.measure = JSON.parse(JSON.stringify(p.measure));
+  state.rule = JSON.parse(JSON.stringify(p.rule));
+  syncFormFromState();
+  refreshMetricList();
+  renderFacts();
+  renderWhen();
+  updateOutput();
+}
+
+/* state → 폼 반영 */
+function syncFormFromState(){
+  document.getElementById('scope-process').value = state.scope.process;
+  document.getElementById('scope-model').value   = state.scope.eqpModel;
+  document.getElementById('scope-eqpid').value   = state.scope.eqpId;
+  document.getElementById('measure-id').value    = state.measure.id;
+  document.getElementById('measure-category').value = state.measure.category;
+  document.getElementById('measure-metric').value = state.measure.metric;
+  document.getElementById('measure-proc').value  = state.measure.proc;
+  document.getElementById('measure-window').value= state.measure.window_minutes;
+  document.getElementById('rule-id').value       = state.rule.id;
+  document.getElementById('rule-interval').value = state.rule.interval_minutes;
+  document.getElementById('rule-severity').value = state.rule.severity;
+  document.getElementById('rule-combine').value  = state.rule.combine;
+  document.getElementById('rule-notify').value   = state.rule.notify;
+  document.getElementById('rule-enabled').checked = state.rule.enabled !== false;
+  document.getElementById('notify-cooldown').value = state.notify.cooldown_minutes;
+  document.getElementById('notify-emailcode').value= state.notify.email_code;
+}
+
+function refreshMetricList(){
+  const dl = document.getElementById('metric-list');
+  const list = CATEGORIES[state.measure.category] || [];
+  dl.innerHTML = list.map(m=>`<option value="${m}">`).join('');
+}
+
+/* facts 동적 렌더 */
+function renderFacts(){
+  const wrap = document.getElementById('facts-list');
+  wrap.innerHTML = '';
+  state.measure.facts.forEach((f, i)=>{
+    const div = document.createElement('div');
+    div.className='list-item'; div.dataset.factRow=i;
+    const typeOpts = Object.keys(FACT_TYPES).map(t=>`<option value="${t}" ${t===f.type?'selected':''}>${FACT_TYPES[t].label}</option>`).join('');
+    let extra = '';
+    if(FACT_TYPES[f.type] && FACT_TYPES[f.type].needsOver){
+      const dirOpts = ['above','below'].map(d=>`<option value="${d}" ${d===f.direction?'selected':''}>${d==='above'?'초과(above)':'미만(below)'}</option>`).join('');
+      extra = `
+        <div class="field" style="margin:0;">
+          <label>사건 경계 (over)</label>
+          <input type="number" class="fact-over" value="${f.over}">
+        </div>
+        <div class="field" style="margin:0;">
+          <label>방향 (direction)</label>
+          <select class="fact-direction">${dirOpts}</select>
+        </div>`;
+    }
+    div.innerHTML = `
+      <div class="li-title">값 #${i+1}
+        ${state.measure.facts.length>1?'<button class="del" data-del-fact="'+i+'">삭제</button>':''}
+      </div>
+      <div class="li-grid" style="grid-template-columns:1fr ${FACT_TYPES[f.type]&&FACT_TYPES[f.type].needsOver?'1fr 1fr':''};">
+        <div class="field" style="margin:0;">
+          <label>종류 (type)</label>
+          <select class="fact-type">${typeOpts}</select>
+        </div>
+        ${extra}
+      </div>`;
+    wrap.appendChild(div);
+  });
+  // 바인딩
+  wrap.querySelectorAll('.fact-type').forEach((sel,i)=>{
+    sel.addEventListener('change', e=>{
+      state.measure.facts[i].type = e.target.value;
+      renderFacts(); renderWhen(); updateOutput();
+    });
+  });
+  wrap.querySelectorAll('.fact-over').forEach((inp,idx)=>{
+    const i = factRowIndex(inp);
+    inp.addEventListener('input', e=>{ state.measure.facts[i].over = numOr(e.target.value,0); updateOutput(); });
+  });
+  wrap.querySelectorAll('.fact-direction').forEach((sel)=>{
+    const i = factRowIndex(sel);
+    sel.addEventListener('change', e=>{ state.measure.facts[i].direction = e.target.value; updateOutput(); });
+  });
+  wrap.querySelectorAll('[data-del-fact]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.measure.facts.splice(+btn.dataset.delFact,1);
+      renderFacts(); renderWhen(); updateOutput();
+    });
+  });
+}
+function factRowIndex(el){
+  const row = el.closest('[data-fact-row]');
+  return row ? +row.dataset.factRow : 0;
+}
+
+/* 현재 measure가 제공하는 fact 핸들 목록 "measureId.type" */
+function factHandles(){
+  return state.measure.facts.map(f=>`${state.measure.id}.${f.type}`);
+}
+
+/* when 동적 렌더 */
+function renderWhen(){
+  const wrap = document.getElementById('when-list');
+  wrap.innerHTML = '';
+  const handles = factHandles();
+  state.rule.when.forEach((w, i)=>{
+    const div = document.createElement('div');
+    div.className='list-item'; div.dataset.whenRow=i;
+    const factOpts = handles.map(h=>`<option value="${h}" ${h===w.fact?'selected':''}>${h}</option>`).join('')
+        + (handles.includes(w.fact)?'':`<option value="${w.fact}" selected>${w.fact||'(선택)'}</option>`);
+    const opOpts = ALL_OPS.map(o=>`<option value="${o}" ${o===w.op?'selected':''}>${o}</option>`).join('');
+    div.innerHTML = `
+      <div class="li-title">조건 #${i+1}
+        ${state.rule.when.length>1?'<button class="del" data-del-when="'+i+'">삭제</button>':''}
+      </div>
+      <div class="li-grid" style="grid-template-columns:2fr 0.9fr 1.1fr;">
+        <div class="field" style="margin:0;">
+          <label>측정값 (fact)</label>
+          <select class="when-fact">${factOpts}</select>
+        </div>
+        <div class="field" style="margin:0;">
+          <label>비교 (op)</label>
+          <select class="when-op">${opOpts}</select>
+        </div>
+        <div class="field" style="margin:0;">
+          <label>기준값 (value)</label>
+          <input type="number" class="when-value" value="${w.value}" step="any">
+        </div>
+      </div>`;
+    wrap.appendChild(div);
+  });
+  wrap.querySelectorAll('.when-fact').forEach(sel=>{
+    const i = +sel.closest('[data-when-row]').dataset.whenRow;
+    sel.addEventListener('change', e=>{ state.rule.when[i].fact=e.target.value; updateOutput(); });
+  });
+  wrap.querySelectorAll('.when-op').forEach(sel=>{
+    const i = +sel.closest('[data-when-row]').dataset.whenRow;
+    sel.addEventListener('change', e=>{ state.rule.when[i].op=e.target.value; updateOutput(); });
+  });
+  wrap.querySelectorAll('.when-value').forEach(inp=>{
+    const i = +inp.closest('[data-when-row]').dataset.whenRow;
+    inp.addEventListener('input', e=>{ state.rule.when[i].value=numOr(e.target.value,0); updateOutput(); });
+  });
+  wrap.querySelectorAll('[data-del-when]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.rule.when.splice(+btn.dataset.delWhen,1);
+      renderWhen(); updateOutput();
+    });
+  });
+}
+
+/* =========================================================================
+   프로파일 빌드 + 검증 + 출력
+   ========================================================================= */
+function buildProfile(){
+  const m = state.measure;
+  const facts = m.facts.map(f=>{
+    if(FACT_TYPES[f.type] && FACT_TYPES[f.type].needsOver)
+      return { type:f.type, over:f.over, direction:f.direction };
+    return { type:f.type };
+  });
+  const r = state.rule;
+  const when = r.when.map(w=>({ fact:w.fact, op:w.op, value:w.value }));
+  const rule = { id:r.id, interval_minutes:r.interval_minutes, severity:r.severity };
+  if(when.length>1) rule.combine = r.combine;
+  rule.when = when;
+  rule.notify = r.notify;
+  if(r.enabled === false) rule.enabled = false;  // 기본 true는 생략, 끈 경우만 표기
+
+  return {
+    scope:{ process:state.scope.process, eqpModel:state.scope.eqpModel, eqpId:state.scope.eqpId },
+    enabled:true,
+    measures:[ { id:m.id, category:m.category, metric:m.metric, proc:m.proc, window_minutes:m.window_minutes, facts } ],
+    rules:[ rule ],
+    notify:{ [state.notify.email_code?'default':'default']:{ cooldown_minutes:state.notify.cooldown_minutes, email_code:state.notify.email_code } },
+  };
+}
+
+/* SCHEMA §5 검증 규칙 (설비 엔지니어용 평문 메시지) */
+function validate(p){
+  // err(code,msg): UI용 평문 메시지(errors)와 머신 판독용 규칙 코드(codes)를 함께 수집.
+  // codes는 window.__rmp.validateCase가 3-way 대조에 사용 (SCHEMA §5.x).
+  const errors=[], warnings=[], codes=[];
+  const err=(code,msg)=>{ errors.push(msg); codes.push(code); };
+  const m = p.measures[0];
+
+  // §5.1 한 measure 내 type 유일
+  const types = m.facts.map(f=>f.type);
+  const dups = [...new Set(types.filter((t,i)=>types.indexOf(t)!==i))];
+  if(dups.length)
+    err("§5.1", `측정 항목 '${m.id}'에 같은 종류(${dups.join(", ")})가 중복되었습니다. 한 측정 항목에는 같은 종류를 한 번만 넣을 수 있어요.`);
+
+  // §5.1 measure id 필수
+  if(!m.id) err("§5.1", "측정 항목 이름(id)을 입력하세요.");
+  if(!m.metric) err("§5.1", "세부 항목(metric)을 입력하세요.");
+
+  for(const r of p.rules){
+    if(!r.id) err("§5.1", "규칙 이름(id)을 입력하세요.");
+    for(const w of r.when){
+      const dot = (w.fact||"").split(".");
+      const mid = dot[0], type = dot.slice(1).join(".");
+      // §5.5 M 존재
+      if(mid !== m.id){
+        err("§5.5", `규칙 '${r.id}'이 존재하지 않는 측정 항목 '${mid||"(빈값)"}'을 참조합니다.`);
+        continue;
+      }
+      // §5.5 T가 measure에 선언됨
+      if(!types.includes(type)){
+        err("§5.5", `규칙 '${r.id}'이 측정 항목 '${mid}'에 없는 값 '${type||"(빈값)"}'을 참조합니다. 2단계에서 먼저 그 값을 추가하세요.`);
+        continue;
+      }
+      // §5.5 op 허용 (type↔op 적합성)
+      const allowed = (FACT_TYPES[type]||{}).ops||[];
+      if(w.op && !allowed.includes(w.op)){
+        err("§5.5", `'${mid}.${type}'에는 비교 연산자 '${w.op}'를 쓸 수 없습니다. 가능한 연산자: ${allowed.join(", ")}.`);
+      }
+    }
+    // §5.6 interval ≤ window
+    if(r.interval_minutes > m.window_minutes){
+      err("§5.6", `규칙 '${r.id}'의 평가 주기(${r.interval_minutes}분)가 관찰 구간(${m.window_minutes}분)보다 깁니다. 사건을 놓칠 수 있으니 주기를 구간 이하로 줄이세요.`);
+    }
+    // §5.7 notify 존재
+    if(r.notify && !p.notify[r.notify]){
+      err("§5.7", `규칙 '${r.id}'이 알림 채널 '${r.notify}'을 참조하지만 4단계에 정의되지 않았습니다.`);
+    }
+  }
+  return {errors, warnings, codes};
+}
+
+function updateOutput(){
+  const p = buildProfile();
+  const json = JSON.stringify(p, null, 2);
+  document.getElementById('json-output').innerHTML = syntaxHighlight(json);
+
+  const {errors, warnings} = validate(p);
+  const box = document.getElementById('validation');
+  let html='';
+  if(errors.length===0 && warnings.length===0){
+    html = `<div class="v-box v-ok"><span class="v-title">✓ 설정이 유효합니다</span></div>`;
+  }
+  if(errors.length){
+    html += `<div class="v-box v-err"><span class="v-title">⚠ 고쳐야 할 점 ${errors.length}개</span>
+      <ul class="v-list">${errors.map(e=>`<li>${escapeHtml(e)}</li>`).join('')}</ul></div>`;
+  }
+  if(warnings.length){
+    html += `<div class="v-box v-warn"><span class="v-title">참고 ${warnings.length}개</span>
+      <ul class="v-list">${warnings.map(w=>`<li>${escapeHtml(w)}</li>`).join('')}</ul></div>`;
+  }
+  box.innerHTML = html;
+}
+
+/* =========================================================================
+   유틸
+   ========================================================================= */
+function numOr(v, d){ const n=parseFloat(v); return isNaN(n)?d:n; }
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function syntaxHighlight(json){
+  json = escapeHtml(json);
+  return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function(match){
+    let cls='json-num';
+    if(/^"/.test(match)) cls = /:$/.test(match) ? 'json-key' : 'json-str';
+    else if(/true|false/.test(match)) cls='json-bool';
+    else if(/null/.test(match)) cls='json-null';
+    return `<span class="${cls}">${match}</span>`;
+  });
+}
+
+function copyJson(){
+  const text = JSON.stringify(buildProfile(), null, 2);
+  window.__lastCopiedText = text; // 복사 내용 검증/디버그용 훅
+  const done = ()=>{
+    const fb = document.getElementById('copy-feedback');
+    fb.classList.add('show');
+    setTimeout(()=>fb.classList.remove('show'), 1800);
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done){
+  const ta=document.createElement('textarea');
+  ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta); done();
+}
+
+// ── 테스트 훅(UI 무관) — SCHEMA §5 검증 3-way 대조 러너가 사용 ──────────────
+// 임의 프로파일 JSON을 받아 검증 결과를 머신 판독 형태로 반환.
+// 주의: playground는 measures[0](단일 measure)만 보고, last/p50/p90/p99·quantifier
+// count_min·spike param 누락은 검증하지 않음 → 그런 케이스는 러너에서 GAP으로 분류.
+window.__rmp = {
+  validateCase(profile){
+    const { errors, codes } = validate(profile);
+    return { valid: errors.length === 0, violations: [...new Set(codes)] };
+  },
+  FACT_TYPES,
+  ALL_OPS
+};
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

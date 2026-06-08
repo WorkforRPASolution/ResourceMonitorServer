@@ -1,25 +1,24 @@
-"""Resolve metric pattern wildcards to actual ES field names."""
+"""Resolve metric pattern wildcards to actual EARS_METRIC instance names.
+
+In v2 the candidate instance names come from a distinct-``EARS_METRIC`` terms
+aggregation (see :meth:`src.es.client.ESClient.get_metric_names`), not from the
+index mapping — every metric is the same ``EARS_VALUE`` column distinguished by
+its ``EARS_METRIC`` value. The fnmatch core is unchanged from v1.
+"""
 from __future__ import annotations
 
 import fnmatch
 
 
 def resolve_metric_patterns(
-    patterns: list[str], available_fields: list[str]
+    patterns: list[str], available_metrics: list[str]
 ) -> dict[str, list[str]]:
-    """For each pattern, find matching field names using fnmatch.
-    Returns {pattern: [matched_fields]}. Non-matching patterns get empty list."""
-    result = {}
-    for pattern in patterns:
-        result[pattern] = [f for f in available_fields if fnmatch.fnmatch(f, pattern)]
-    return result
+    """For each pattern, return the ``available_metrics`` it matches via fnmatch.
 
-
-def get_agg_type(metric_pattern: str, field_name: str) -> str:
-    """Determine the ES aggregation type for a metric.
-    - process_watch fields (required, forbidden) -> "state_check"
-    - Everything else -> "max"
+    Returns ``{pattern: [matched, ...]}``; a non-matching pattern maps to ``[]``.
+    A literal (wildcard-free) pattern matches only its exact name.
     """
-    if field_name in ("required", "forbidden"):
-        return "state_check"
-    return "max"
+    return {
+        pattern: [m for m in available_metrics if fnmatch.fnmatch(m, pattern)]
+        for pattern in patterns
+    }

@@ -233,36 +233,38 @@ class TestDebugProcessesResolution:
 class TestSchedulerReload:
     def _make_deps_with_profile(self):
         from src.db.models import (
-            AnalysisConfig,
-            MetricSchedule,
+            Condition,
+            Fact,
+            Measure,
             MonitorProfile,
+            NotifyChannel,
+            Rule,
             Scope,
-            ThresholdConfig,
         )
 
+        # two rules at two distinct intervals → one job per (process, interval)
         profile = MonitorProfile(
             scope=Scope(process="*"),
-            analysis_configs=[
-                AnalysisConfig(
-                    metric_pattern="total_used_pct",
-                    threshold=ThresholdConfig(
-                        warning=80, critical=95, cooldown_minutes=30
-                    ),
-                    schedule=MetricSchedule(interval_minutes=5, window_minutes=10),
-                ),
-                AnalysisConfig(
-                    metric_pattern="*_core_load",
-                    threshold=ThresholdConfig(
-                        warning=85, critical=97, cooldown_minutes=30
-                    ),
-                    schedule=MetricSchedule(interval_minutes=10, window_minutes=15),
-                ),
+            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                              window_minutes=15, facts=[Fact(type="max")])],
+            rules=[
+                Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=80)]),
+                Rule(id="cpu_slow", interval_minutes=10, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=70)]),
             ],
+            notify={"default": NotifyChannel(cooldown_minutes=30)},
         )
+        # reload() derives job cadence from get_scheduling_intervals (the union
+        # of intervals across all scope docs for the process), NOT from the
+        # process-level resolve_profile. resolve_profile stays for the engine's
+        # per-equipment resolution at run time.
+        intervals = sorted({r.interval_minutes for r in profile.rules})
         deps = SimpleNamespace(
             es=MagicMock(),
             profile_repo=MagicMock(
-                resolve_profile=AsyncMock(return_value=profile)
+                resolve_profile=AsyncMock(return_value=profile),
+                get_scheduling_intervals=AsyncMock(return_value=intervals),
             ),
             eqp_info_repo=MagicMock(),
             zk_lock=MagicMock(),
@@ -272,7 +274,7 @@ class TestSchedulerReload:
         )
         return deps
 
-    async def test_reload_registers_jobs_for_processes(self):
+    async def test_reload_registers_jobs_per_process_interval(self):
         deps = self._make_deps_with_profile()
         sched = AnalysisScheduler(
             AppSettings(scheduler_misfire_grace_time=60), deps
@@ -282,12 +284,12 @@ class TestSchedulerReload:
 
         jobs = sched._scheduler.get_jobs()
         job_ids = {j.id for j in jobs}
-        # 2 processes × 2 analysis_configs = 4 jobs
+        # 2 processes × 2 distinct intervals = 4 jobs
         assert len(jobs) == 4
-        assert "analysis-CVD-total_used_pct" in job_ids
-        assert "analysis-CVD-*_core_load" in job_ids
-        assert "analysis-ETCH-total_used_pct" in job_ids
-        assert "analysis-ETCH-*_core_load" in job_ids
+        assert "analysis-CVD-5m" in job_ids
+        assert "analysis-CVD-10m" in job_ids
+        assert "analysis-ETCH-5m" in job_ids
+        assert "analysis-ETCH-10m" in job_ids
         await sched.shutdown(timeout=1.0)
 
     async def test_reload_removes_old_jobs_first(self):
@@ -298,22 +300,37 @@ class TestSchedulerReload:
         await sched.start()
         await sched.reload(["CVD"])
         assert len(sched._scheduler.get_jobs()) == 2
-        # Reload with different process
         await sched.reload(["ETCH"])
         job_ids = {j.id for j in sched._scheduler.get_jobs()}
-        assert "analysis-CVD-total_used_pct" not in job_ids
-        assert "analysis-ETCH-total_used_pct" in job_ids
+        assert "analysis-CVD-5m" not in job_ids
+        assert "analysis-ETCH-5m" in job_ids
         await sched.shutdown(timeout=1.0)
 
-    async def test_reload_skips_process_with_no_profile(self):
+    async def test_reload_skips_process_with_no_intervals(self):
         deps = self._make_deps_with_profile()
-        deps.profile_repo.resolve_profile = AsyncMock(return_value=None)
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[])
         sched = AnalysisScheduler(
             AppSettings(scheduler_misfire_grace_time=60), deps
         )
         await sched.start()
         await sched.reload(["CVD"])
         assert len(sched._scheduler.get_jobs()) == 0
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reload_schedules_eqp_only_process(self):
+        # Regression: a process whose ONLY profile doc is eqp/model-scoped must
+        # still get a job. reload trusts get_scheduling_intervals (which folds in
+        # overlays), so a single interval from an eqp-only doc registers a job —
+        # whereas resolve_profile(process,"*","*") would have returned None.
+        deps = self._make_deps_with_profile()
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[5])
+        sched = AnalysisScheduler(
+            AppSettings(scheduler_misfire_grace_time=60), deps
+        )
+        await sched.start()
+        await sched.reload(["CVD"])
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert job_ids == {"analysis-CVD-5m"}
         await sched.shutdown(timeout=1.0)
 
     async def test_reload_uses_debug_processes_when_none_passed(self):
@@ -327,6 +344,6 @@ class TestSchedulerReload:
         await sched.start()
         await sched.reload()  # no processes arg → debug mode resolution
         job_ids = {j.id for j in sched._scheduler.get_jobs()}
-        assert "analysis-PVD-total_used_pct" in job_ids
-        assert "analysis-PVD-*_core_load" in job_ids
+        assert "analysis-PVD-5m" in job_ids
+        assert "analysis-PVD-10m" in job_ids
         await sched.shutdown(timeout=1.0)

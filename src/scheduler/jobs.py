@@ -115,21 +115,30 @@ class AnalysisScheduler:
         engine = self._get_engine()
 
         for process in processes:
-            profile = await self._deps.profile_repo.resolve_profile(
-                process, "*", "*"
+            # Job cadence = the union of rule intervals across EVERY scope doc
+            # that can affect this process (process-specific + model/eqp overlays
+            # + globals). We must NOT derive it from resolve_profile(process,*,*),
+            # which sees only the process-level/global ancestors — a profile
+            # scoped to a specific model/equipment would then never be scheduled.
+            # The engine re-resolves the effective profile per equipment at run
+            # time, so thresholds/overrides still apply; here we only need cadence.
+            # Only enabled rules contribute their interval (a disabled rule needs
+            # no job — the engine skips it anyway). See get_scheduling_intervals.
+            intervals = await self._deps.profile_repo.get_scheduling_intervals(
+                process
             )
-            if profile is None:
+            if not intervals:
                 logger.warning(
-                    "reload_no_profile_for_process", process=process
+                    "reload_no_intervals_for_process", process=process
                 )
                 continue
-            for config in profile.analysis_configs:
-                job_id = f"analysis-{process}-{config.metric_pattern}"
+            for interval in intervals:
+                job_id = f"analysis-{process}-{interval}m"
                 self._scheduler.add_job(
                     self._job_wrapper,
                     "interval",
-                    minutes=config.schedule.interval_minutes,
-                    args=[engine.run_analysis, process, config],
+                    minutes=interval,
+                    args=[engine.run_analysis, process, interval],
                     id=job_id,
                     replace_existing=True,
                 )
