@@ -31,7 +31,12 @@ from src.db.models import (
     Rule,
     Scope,
 )
-from src.db.repository import EqpInfoRepository, ProfileRepository
+from src.config.constants import COLL_RMS_EMAIL_TEMPLATE
+from src.db.repository import (
+    EqpInfoRepository,
+    ProfileRepository,
+    RmsEmailTemplateRepository,
+)
 from src.distributed.lock import NoOpZKLock
 from src.es.client import ESClient
 from src.es.queries import QueryBuilder
@@ -44,7 +49,7 @@ _INTERVAL = 5  # all rules below use interval_minutes=5
 # ======================================================================
 # 공통 헬퍼
 # ======================================================================
-def _make_settings(email_url: str, ns: Any) -> AppSettings:
+def _make_settings(email_url: str, ns: Any, *, custom_body: bool = False) -> AppSettings:
     return AppSettings(
         es_hosts=["http://localhost:9200"],
         redis_url="redis://localhost:6379/15",
@@ -56,6 +61,9 @@ def _make_settings(email_url: str, ns: Any) -> AppSettings:
         grafana_dashboard_uid="",
         local_tz="Asia/Seoul",
         debug_read_only=False,
+        # Option C dark-launch flag: off by default so the legacy 9-field payload
+        # tests are unaffected; flipped on per-test for the renderedBody cases.
+        rms_custom_body_enabled=custom_body,
     )
 
 
@@ -118,6 +126,21 @@ async def _seed_profile(mongo_db: Any, profile: MonitorProfile) -> None:
     await ProfileRepository(mongo_db["RESOURCE_MONITOR_PROFILE"]).upsert(profile)
 
 
+async def _seed_template(
+    mongo_db: Any, *, process: str, model: str, subcode: str,
+    html: str, title: str, app: str = "ARS", code: str = "RESOURCE_MONITOR",
+) -> None:
+    """Insert one RESOURCE_MONITOR_EMAIL_TEMPLATE row (operator-authored body).
+
+    The RMS accessor is read-only (it never writes), so the test seeds the
+    collection directly — the engine's _dispatch then fetches it via the 5-tier
+    fallback when ``rms_custom_body_enabled`` is on."""
+    await mongo_db[COLL_RMS_EMAIL_TEMPLATE].insert_one({
+        "app": app, "process": process, "model": model,
+        "code": code, "subcode": subcode, "html": html, "title": title,
+    })
+
+
 def _cpu_profile(process: str, *, rules: list[Rule], cooldown: int = 30) -> MonitorProfile:
     return MonitorProfile(
         scope=Scope(process=process),
@@ -151,6 +174,7 @@ def _make_engine(real_es, mongo_db, real_redis, settings) -> AnalysisEngine:
         zk_lock=NoOpZKLock(),
         cooldown_mgr=AlertCooldownManager(redis_client, settings=settings),
         email_client=EmailAlertClient(settings),
+        template_repo=RmsEmailTemplateRepository(mongo_db[COLL_RMS_EMAIL_TEMPLATE]),
     )
     return AnalysisEngine(deps, settings)
 
@@ -162,8 +186,9 @@ async def phase1_db(real_mongo: Any, ns: Any):
     await real_mongo.drop_database(db_name)
 
 
-async def _drive(real_es, mongo_db, real_redis, ns, email_url, process, *, runs=1):
-    settings = _make_settings(email_url, ns)
+async def _drive(real_es, mongo_db, real_redis, ns, email_url, process, *, runs=1,
+                 custom_body=False):
+    settings = _make_settings(email_url, ns, custom_body=custom_body)
     engine = _make_engine(real_es, mongo_db, real_redis, settings)
     await engine._deps.email_client.connect()
     results = []
@@ -469,3 +494,156 @@ async def test_category_filter_separates_same_metric(real_es, phase1_db, real_re
     assert result.breaches[0].category == "memory"
     (payload,) = mock_email_server["received"]
     assert payload["subcode"] == "MEMORY_WARNING"
+
+
+# ======================================================================
+# P4 — Option C: renderedBody/title 페이로드 (rms_custom_body_enabled ON)
+# ======================================================================
+# 공통 ERB 템플릿 조각: 행마다 1<tr>. P4-1/P4-2가 행 개수로 단일/그룹을 구분.
+_ERB_HTML_3COL = (
+    "<table><!--@EachEquipment-->"
+    "<tr><td>@Row.EqpId</td><td>@Row.Model</td><td>@Row.CurrentValue</td></tr>"
+    "<!--@EndEachEquipment--></table>"
+)
+_ERB_HTML_2COL = (
+    "<table><!--@EachEquipment-->"
+    "<tr><td>@Row.EqpId</td><td>@Row.CurrentValue</td></tr>"
+    "<!--@EndEachEquipment--></table>"
+)
+
+
+# P4-1 — group_by="model" + 운영자 템플릿: 동일 모델 3대 → 1통, renderedBody N행 + escape
+async def test_group_model_renders_n_row_table(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process = "E2E_TMPL"
+    # eqpModel 에 '&' 를 넣어 @Row.Model 의 HTML escape 를 end-to-end 로 검증한다.
+    model = "M&G"
+    rows = [
+        {"eqpId": "E2E-T-01", "category": "cpu", "metric": "total_used_pct", "value": 91.0},
+        {"eqpId": "E2E-T-02", "category": "cpu", "metric": "total_used_pct", "value": 95.0},
+        {"eqpId": "E2E-T-03", "category": "cpu", "metric": "total_used_pct", "value": 99.0},
+    ]
+    index = await _seed_es(real_es, process, rows)
+    for r in rows:
+        await _seed_eqp_info(phase1_db, process, r["eqpId"], eqpModel=model)
+    profile = MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[_warn()],
+        notify={"default": NotifyChannel(cooldown_minutes=30, group_by="model")},
+    )
+    await _seed_profile(phase1_db, profile)
+    await _seed_template(
+        phase1_db, process=process, model=model, subcode="CPU_WARNING",
+        html=_ERB_HTML_3COL, title="[EARS] @Category @Severity x@AffectedCount",
+    )
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process, custom_body=True)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert {b.eqp_id for b in result.breaches} == {"E2E-T-01", "E2E-T-02", "E2E-T-03"}
+    (payload,) = mock_email_server["received"]  # 동일 모델 3대 → 1통
+    body = payload["renderedBody"]
+    # 3행이 모두 펼쳐졌다
+    assert body.count("<tr>") == 3
+    for eqp in ("E2E-T-01", "E2E-T-02", "E2E-T-03"):
+        assert eqp in body
+    # @Row.Model 값의 '&' 가 escape 됐다(M&G → M&amp;G). raw 'M&G' 는 남지 않는다.
+    assert "M&amp;G" in body
+    assert "M&G" not in body
+    # 기본 정렬(현재값 worst 우선): 99(T-03) 행이 91(T-01) 행보다 앞선다
+    assert body.index("E2E-T-03") < body.index("E2E-T-01")
+    # 제목 = 스칼라 치환 결과(콜론 제거 규칙은 'CPU'/'WARNING' 에 영향 없음)
+    assert payload["title"] == "[EARS] CPU WARNING x3"
+    # 대표 hostname = 최소 eqpId, affected 변수도 함께 유지
+    assert payload["hostname"] == "E2E-T-01"
+    assert payload["variables"]["AffectedCount"] == "3"
+
+
+# P4-2 — group_by="eqp"(기본) + 운영자 템플릿: 단일 장비 → renderedBody 1행
+async def test_single_mode_one_row(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process, eqp_id = "E2E_TMPL1", "E2E-S-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)  # eqpModel=MODEL-E2E (기본)
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
+    await _seed_template(
+        phase1_db, process=process, model="MODEL-E2E", subcode="CPU_WARNING",
+        html=_ERB_HTML_2COL, title="[EARS] @Hostname",
+    )
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process, custom_body=True)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert len(result.breaches) == 1
+    (payload,) = mock_email_server["received"]
+    body = payload["renderedBody"]
+    assert body.count("<tr>") == 1  # 단일 장비 → 1행
+    assert eqp_id in body
+    assert payload["title"] == "[EARS] E2E-S-01"
+
+
+# P4-3 — 회귀 가드: flag OFF → 페이로드 정확히 9필드(renderedBody/title 없음)
+async def test_flag_off_legacy_payload(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process, eqp_id = "E2E_OFF", "E2E-OFF-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
+    # 템플릿이 존재해도 flag OFF 면 조회/렌더하지 않아야 한다(다크런치 보장).
+    await _seed_template(
+        phase1_db, process=process, model="MODEL-E2E", subcode="CPU_WARNING",
+        html=_ERB_HTML_2COL, title="[EARS] should-not-be-used",
+    )
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process, custom_body=False)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert len(result.breaches) == 1
+    (payload,) = mock_email_server["received"]
+    assert set(payload.keys()) == {
+        "hostname", "ip", "app", "process", "model", "line",
+        "code", "subcode", "variables",
+    }
+    assert "renderedBody" not in payload
+    assert "title" not in payload
+
+
+# P4-4 — flag ON 이지만 매칭 템플릿 없음 → 내장 기본 본문으로 발송(실패 0)
+async def test_template_miss_builtin(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process, eqp_id = "E2E_MISS", "E2E-MISS-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    await _seed_profile(phase1_db, _cpu_profile(process, rules=[_warn()]))
+    # 템플릿 미시드 → find_template None → DEFAULT_BODY/DEFAULT_TITLE 폴백
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process, custom_body=True)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    assert len(result.breaches) == 1
+    (payload,) = mock_email_server["received"]  # "no template" 로 실패하지 않고 발송됨
+    body = payload["renderedBody"]
+    assert body  # 비어있지 않음
+    assert "임계 초과" in body  # 내장 기본 본문 시그니처
+    assert eqp_id in body  # ERB 가 장비 행을 채움
+    assert payload["title"] == "[EARS] 자원 모니터링 알림"  # 내장 기본 제목(콜론 없음)

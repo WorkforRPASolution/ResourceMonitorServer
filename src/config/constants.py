@@ -23,6 +23,7 @@ SELF_ALERT_LINE = "self"
 # (the former COLL_RULE / RESOURCE_MONITOR_RULE collection was dropped).
 COLL_PROFILE = "RESOURCE_MONITOR_PROFILE"
 COLL_EQP_INFO = "EQP_INFO"  # read-only, managed by Akka server
+COLL_RMS_EMAIL_TEMPLATE = "RESOURCE_MONITOR_EMAIL_TEMPLATE"  # read-only, authored in WebManager
 
 # ZK paths (appended to settings.zk_root_path)
 ZK_PATH_LEADER_ELECTION = "leader-election"

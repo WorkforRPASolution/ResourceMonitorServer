@@ -115,6 +115,7 @@ async def lifespan(app: FastAPI):
                     ),
                     email_client=infra.email,
                     query_builder=QueryBuilder(settings),
+                    template_repo=repos.template_repo,
                 )
             else:
                 sched_deps = SchedulerDeps(
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
                     cooldown_mgr=distributed.cooldown_mgr,
                     email_client=infra.email,
                     query_builder=QueryBuilder(settings),
+                    template_repo=repos.template_repo,
                 )
             scheduler = await init_scheduler(settings, sched_deps)
             if scheduler_holder is not None:

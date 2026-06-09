@@ -26,6 +26,7 @@ from src.analyzer import fact_catalog as fc
 from src.analyzer.alert_builder import (
     build_alert_request,
     make_cooldown_key,
+    resolve_code_subcode,
     resolve_group_value,
 )
 from src.analyzer.es_parser import parse_metric_aggregation
@@ -113,7 +114,7 @@ class AnalysisEngine:
 
         breaches = [p.breach for p in pending]
         if pending:
-            await self._dispatch(process, pending, eqp_lookup)
+            await self._dispatch(process, pending, eqp_lookup, now)
 
         return AnalysisResult(
             process=process,
@@ -226,6 +227,7 @@ class AnalysisEngine:
         process: str,
         pending: list[_Pending],
         eqp_lookup: dict[str, dict[str, Any]],
+        now: datetime,
     ) -> None:
         """Cooldown-gate and send one email per group.
 
@@ -270,9 +272,24 @@ class AnalysisEngine:
                 rep_eqp = breaching_eqps[0]
             rep = next(m for m in members if m.breach.eqp_id == rep_eqp)
             affected = breaching_eqps if channel.group_by != "eqp" else None
+            # Option C: when enabled, fetch the operator template (async) here —
+            # keeping build_alert_request synchronous (review fix). Off → no fetch,
+            # payload stays the legacy 9 fields.
+            template = None
+            if self._settings.rms_custom_body_enabled:
+                code, subcode = resolve_code_subcode(channel, rep.breach)
+                template = await self._deps.template_repo.find_template(
+                    self._settings.email_app_name,
+                    process,
+                    eqp_lookup[rep_eqp].get("eqpModel", ""),
+                    code,
+                    subcode,
+                )
             alert = build_alert_request(
                 rep.breach, eqp_lookup[rep_eqp], process, self._settings,
                 channel, rep.window_minutes, affected_equipment=affected,
+                members=[m.breach for m in members], eqp_lookup=eqp_lookup,
+                timestamp=now, template=template,
             )
             if await self._deps.email_client.send_alert(alert):
                 await self._deps.cooldown_mgr.set_cooldown(

@@ -1,0 +1,46 @@
+{
+  "_doc": "Canonical golden cases for the RMS alert-email body renderer (Option C). RMS pytest (test_body_renderer.py) is the source of truth; WebManager vendors a byte-identical copy and runs the JS preview renderer against it (tdd-plan P6-3). Values are strings to stay language-neutral.",
+  "cases": [
+    {
+      "name": "single_cpu_critical",
+      "title_template": "[EARS] @Category @Severity - @Hostname",
+      "template_html": "<p>@Hostname 현재 @CurrentValue (임계 @Threshold)</p>",
+      "scalars": {
+        "@Category": "CPU",
+        "@Severity": "CRITICAL",
+        "@Hostname": "EQP001",
+        "@CurrentValue": "91.2",
+        "@Threshold": "85.0"
+      },
+      "rows": [],
+      "expected_title": "[EARS] CPU CRITICAL - EQP001",
+      "expected_body": "<p>EQP001 현재 91.2 (임계 85.0)</p>"
+    },
+    {
+      "name": "group_three_rows",
+      "title_template": "[EARS] @Category @Severity x@AffectedCount",
+      "template_html": "<table><!--@EachEquipment--><tr><td>@Row.EqpId</td><td>@Row.CurrentValue</td></tr><!--@EndEachEquipment--></table>",
+      "scalars": {
+        "@Category": "CPU",
+        "@Severity": "CRITICAL",
+        "@AffectedCount": "3"
+      },
+      "rows": [
+        { "@Row.EqpId": "EQP001", "@Row.CurrentValue": "91.2" },
+        { "@Row.EqpId": "EQP002", "@Row.CurrentValue": "88.9" },
+        { "@Row.EqpId": "EQP003", "@Row.CurrentValue": "86.1" }
+      ],
+      "expected_title": "[EARS] CPU CRITICAL x3",
+      "expected_body": "<table><tr><td>EQP001</td><td>91.2</td></tr><tr><td>EQP002</td><td>88.9</td></tr><tr><td>EQP003</td><td>86.1</td></tr></table>"
+    },
+    {
+      "name": "escape_in_value",
+      "title_template": "@Severity",
+      "template_html": "<td>@Fact</td>",
+      "scalars": { "@Severity": "WARNING", "@Fact": "a<b&c" },
+      "rows": [],
+      "expected_title": "WARNING",
+      "expected_body": "<td>a&lt;b&amp;c</td>"
+    }
+  ]
+}

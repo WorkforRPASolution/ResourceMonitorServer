@@ -400,3 +400,32 @@ class TestEmailOutbox:
         # send_alert returns True without touching the http client
         await client.send_alert(sample_request)
         assert client.get_outbox_snapshot() == []
+
+
+@pytest.mark.unit
+class TestSendAlertPayloadPassThrough:
+    """email_client is a pure to_payload() pass-through — the on/off key set is
+    owned by EmailAlertRequest (P3-2); this guards the wire boundary."""
+
+    async def test_posts_to_payload_verbatim_off_mode(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(200, {"result": "Success"})
+        await client.send_alert(sample_request)
+        _, kwargs = client._http_client.post.call_args
+        assert kwargs["json"] == sample_request.to_payload()
+        assert "renderedBody" not in kwargs["json"]  # legacy 9 fields
+
+    async def test_posts_rendered_body_and_title_when_set(self, settings):
+        req = EmailAlertRequest(
+            hostname="H", ip="1.1.1.1", app="ARS", process="P", eqp_model="M",
+            line="L", code="C", subcode="S", variables={},
+            rendered_body="<p>x</p>", title="[EARS] t",
+        )
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(200, {"result": "Success"})
+        await client.send_alert(req)
+        _, kwargs = client._http_client.post.call_args
+        assert kwargs["json"]["renderedBody"] == "<p>x</p>"
+        assert kwargs["json"]["title"] == "[EARS] t"

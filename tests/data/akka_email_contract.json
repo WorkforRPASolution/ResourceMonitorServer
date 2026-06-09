@@ -1,0 +1,43 @@
+{
+  "_doc": "Cross-language wire contract for POST /EmailNotify (Akka EmailHttpDataFormat). RMS pytest (tests/unit/test_akka_contract.py) is the source of truth: EmailAlertRequest.to_payload() must equal these objects. Akka's EmailHttpDataFormatSpec (tdd-plan P5-1) extract()s the SAME objects into its case class, proving field-name/shape agreement without a live server. 'rendered' = full Option C payload (Some/Some); 'legacy' = dark-launch 9-field payload (None/None).",
+  "rendered": {
+    "hostname": "EQP001",
+    "ip": "10.0.0.99",
+    "app": "ARS",
+    "process": "PHOTO",
+    "model": "MODEL-A",
+    "line": "L1",
+    "code": "RESOURCE_MONITOR",
+    "subcode": "CPU_CRITICAL",
+    "variables": {
+      "Severity": "CRITICAL",
+      "Category": "CPU",
+      "MetricName": "cpu.max",
+      "CurrentValue": "96.5",
+      "Threshold": "95.0",
+      "WindowMin": "10",
+      "GrafanaUrl": ""
+    },
+    "renderedBody": "<h3>[CPU] CRITICAL 임계 초과</h3><table border=\"1\"><tr><th>장비</th><th>현재값</th></tr><tr><td>EQP001</td><td>96.5</td></tr></table>",
+    "title": "[EARS] CPU CRITICAL - EQP001"
+  },
+  "legacy": {
+    "hostname": "EQP001",
+    "ip": "10.0.0.99",
+    "app": "ARS",
+    "process": "PHOTO",
+    "model": "MODEL-A",
+    "line": "L1",
+    "code": "RESOURCE_MONITOR",
+    "subcode": "CPU_CRITICAL",
+    "variables": {
+      "Severity": "CRITICAL",
+      "Category": "CPU",
+      "MetricName": "cpu.max",
+      "CurrentValue": "96.5",
+      "Threshold": "95.0",
+      "WindowMin": "10",
+      "GrafanaUrl": ""
+    }
+  }
+}

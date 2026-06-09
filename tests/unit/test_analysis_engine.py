@@ -351,3 +351,40 @@ class TestGroupSend:
         })
         await _engine(deps).run_analysis("CVD", 5)
         deps.email_client.send_alert.assert_not_awaited()
+
+
+def _settings_body_on():
+    return AppSettings(grafana_base_url="http://grafana:3000",
+                       grafana_dashboard_uid="abc123", email_app_name="ARS",
+                       rms_custom_body_enabled=True)
+
+
+class TestRenderedBodyDispatch:
+    async def test_flag_on_fetches_template_and_renders(self):
+        deps = _make_deps(_cpu_profile())
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 92.5))
+        deps.template_repo = AsyncMock()
+        deps.template_repo.find_template = AsyncMock(return_value={
+            "html": "<p>@Hostname @CurrentValue</p>", "title": "[EARS] @Severity"})
+        engine = AnalysisEngine(deps, _settings_body_on())
+        engine._es_semaphore = asyncio.Semaphore(3)
+
+        await engine.run_analysis("CVD", 5)
+
+        deps.template_repo.find_template.assert_awaited()
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert alert.rendered_body == "<p>EQP01 92.5</p>"
+        assert alert.title == "[EARS] WARNING"
+        assert "renderedBody" in alert.to_payload()
+
+    async def test_flag_off_skips_template_repo(self):
+        deps = _make_deps(_cpu_profile())
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 92.5))
+        deps.template_repo = AsyncMock()
+        deps.template_repo.find_template = AsyncMock()
+
+        await _engine(deps).run_analysis("CVD", 5)  # _settings(): flag off
+
+        deps.template_repo.find_template.assert_not_awaited()
+        alert = deps.email_client.send_alert.await_args.args[0]
+        assert alert.rendered_body is None

@@ -3,8 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config.constants import COLL_PROFILE
+from src.config.constants import COLL_PROFILE, COLL_RMS_EMAIL_TEMPLATE
 from src.config.settings import AppSettings
+from src.db.repository import RmsEmailTemplateRepository
 from src.startup.infra import InfraContext, init_infra
 from src.startup.repos import init_repos
 
@@ -195,6 +196,22 @@ class TestInitRepos:
         repos = await init_repos(ctx, settings)
         assert repos.profile_repo is not None
         assert repos.eqp_info_repo is not None
+
+    async def test_init_repos_builds_template_repo(self, settings):
+        ctx = self._make_infra()
+        repos = await init_repos(ctx, settings)
+        assert isinstance(repos.template_repo, RmsEmailTemplateRepository)
+
+    async def test_init_repos_does_not_create_or_index_template_collection(self, settings):
+        """RMS must not create/index RESOURCE_MONITOR_EMAIL_TEMPLATE — it is
+        authored/owned by WebManager and read-only here (like EQP_INFO)."""
+        ctx = self._make_infra()
+        await init_repos(ctx, settings)
+        created = [c.args[0] for c in ctx.mongo.db.create_collection.call_args_list]
+        assert COLL_RMS_EMAIL_TEMPLATE not in created
+        tmpl = ctx.mongo.db._collections.get(COLL_RMS_EMAIL_TEMPLATE)
+        if tmpl is not None:  # handle may be taken, but never indexed
+            tmpl.create_index.assert_not_awaited()
 
     async def test_init_repos_creates_unique_scope_index_on_profile(self, settings):
         """★ Regression guard for Phase 0 schema gap:

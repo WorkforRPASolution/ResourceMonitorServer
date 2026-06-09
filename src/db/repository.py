@@ -367,3 +367,49 @@ class EqpInfoRepository:
             raise MongoUnavailableError(
                 f"get_active_equipment_by_process: {e}"
             ) from e
+
+
+class RmsEmailTemplateRepository:
+    """Read-only view of ``RESOURCE_MONITOR_EMAIL_TEMPLATE`` (Option C).
+
+    Operators author rows in WebManager; RMS only ever *reads*. We never create,
+    index, or write this collection — WebManager owns its schema (same treatment
+    as `EqpInfoRepository` for the Akka-owned EQP_INFO).
+
+    Lookup is by the composite key ``(app, process, model, code, subcode)`` with
+    a 5-tier ``'_'`` wildcard fallback. RMS owns this fallback, so a single
+    ``(process="_", model="_")`` catch-all row serves every process/model — Akka's
+    ``getEmailBody`` cannot wildcard process/model (architecture §7.1, §5-①).
+    """
+
+    _PROJECTION = {"_id": 0}
+
+    def __init__(self, collection: AsyncIOMotorCollection) -> None:
+        self._collection = collection
+
+    @staticmethod
+    def _fallback_queries(
+        app: str, process: str, model: str, code: str, subcode: str
+    ) -> list[dict[str, str]]:
+        """Cumulative broadening: exact → subcode '_' → model '_' → process '_'
+        → code '_' (app stays fixed)."""
+        return [
+            {"app": app, "process": process, "model": model, "code": code, "subcode": subcode},
+            {"app": app, "process": process, "model": model, "code": code, "subcode": "_"},
+            {"app": app, "process": process, "model": "_", "code": code, "subcode": "_"},
+            {"app": app, "process": "_", "model": "_", "code": code, "subcode": "_"},
+            {"app": app, "process": "_", "model": "_", "code": "_", "subcode": "_"},
+        ]
+
+    async def find_template(
+        self, app: str, process: str, model: str, code: str, subcode: str
+    ) -> dict[str, Any] | None:
+        """Return the first matching template doc (broadening the key), else None."""
+        try:
+            for query in self._fallback_queries(app, process, model, code, subcode):
+                doc = await self._collection.find_one(query, self._PROJECTION)
+                if doc is not None:
+                    return doc
+            return None
+        except _MONGO_UNAVAILABLE_EXC as e:
+            raise MongoUnavailableError(f"find_template: {e}") from e
