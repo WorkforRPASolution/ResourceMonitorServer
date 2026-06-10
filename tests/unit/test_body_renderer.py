@@ -158,6 +158,46 @@ class TestEquipmentRepeatBlock:
 
 
 @pytest.mark.unit
+class TestMalformedErbIsTotal:
+    """The canonical renderer must be *total* on malformed ERB fences (gap found
+    by the 2026-06 completeness audit). RMS reads templates straight from Mongo,
+    so a seed/migration/manual-edit that bypasses the WebManager ERB lint must
+    not crash the alert pipeline nor leak markers/blank rows into the email."""
+
+    def test_start_without_end_does_not_raise_and_strips_marker(self):
+        # previously: rest.split(ERB_END, 1) raised ValueError (unpack) → caller
+        # swallowed it into DEFAULT_BODY. Now total: no marker leak, no crash.
+        tpl = f"<table>{ERB}<tr><td>@Row.EqpId</td></tr></table>"  # no END
+        out = render_body(tpl, {}, [{"@Row.EqpId": "EQP001"}])
+        assert ERB not in out and END not in out
+        assert "@EachEquipment" not in out
+        assert "<table>" in out and "</table>" in out
+
+    def test_end_only_strips_marker(self):
+        out = render_body(f"<p>x</p>{END}", {}, [])
+        assert ERB not in out and END not in out
+        assert "@EachEquipment" not in out and "@EndEachEquipment" not in out
+        assert "<p>x</p>" in out
+
+    def test_leading_stray_end_then_valid_block_still_expands(self):
+        tpl = f"{END}<table>{ERB}<tr>@Row.EqpId</tr>{END}</table>"
+        out = render_body(tpl, {}, [{"@Row.EqpId": "EQP001"}])
+        assert ERB not in out and END not in out
+        assert "EQP001" in out  # the first balanced block still expands
+
+    def test_duplicate_blocks_drop_second_no_marker_no_blank_row(self):
+        tpl = (
+            f"<table>{ERB}<tr>R1=@Row.EqpId</tr>{END}"
+            f"MID{ERB}<tr>R2=@Row.EqpId</tr>{END}</table>"
+        )
+        out = render_body(tpl, {}, [{"@Row.EqpId": "EQP001"}])
+        assert ERB not in out and END not in out      # no marker leak (issue #2)
+        assert "R1=EQP001" in out                       # first block expanded
+        assert "R2" not in out                          # second block dropped whole
+        assert "<tr></tr>" not in out                   # no blank row
+
+
+@pytest.mark.unit
 class TestSizeGuards:
     def test_erb_row_cap_with_overflow(self):
         tpl = f"{ERB}<tr><td>@Row.EqpId</td></tr>{END}"

@@ -219,12 +219,44 @@ class TestRenderedBody:
         assert "임계 초과" in req.rendered_body  # DEFAULT_BODY marker
         assert req.title  # DEFAULT_TITLE fallback
 
-    def test_render_error_falls_back_to_default(self):
+    def test_unbalanced_erb_renders_best_effort_without_crashing(self):
+        # Hardening (2026-06 completeness audit): an unbalanced ERB fence no
+        # longer raises — the renderer is total, so the operator's surrounding
+        # HTML renders best-effort (markers stripped, rows not expanded) instead
+        # of crashing into the DEFAULT_BODY fallback. The WebManager lint +
+        # server validation are the primary guard; this is the should-never-
+        # happen backstop (RMS reads templates straight from Mongo).
         s = _make_settings(rms_custom_body_enabled=True)
         b = _breach(eqp_id="EQP01")
-        # malformed: ERB start without end → render_body raises → fallback
         template = {"html": "<table><!--@EachEquipment--><tr>@Row.EqpId</tr>",
                     "title": "T"}
+        req = build_alert_request(
+            b, _EQP, "CVD", s, NotifyChannel(cooldown_minutes=30),
+            window_minutes=15, members=[b], eqp_lookup={"EQP01": _EQP},
+            timestamp=self._TS, template=template,
+        )
+        assert "<!--@EachEquipment-->" not in req.rendered_body  # no marker leak
+        assert "<table>" in req.rendered_body                    # operator HTML kept
+        assert req.title == "T"            # operator title kept → no fallback fired
+
+    def test_render_error_falls_back_to_default(self, monkeypatch):
+        # The D5 safety net is retained: any *unexpected* render error (not ERB,
+        # which is now handled) still falls back to the built-in DEFAULT_BODY so
+        # an alert is never dropped. We force the first render_body call to raise.
+        import src.analyzer.alert_builder as ab
+        real = ab.render_body
+        calls = {"n": 0}
+
+        def boom(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("render boom")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(ab, "render_body", boom)
+        s = _make_settings(rms_custom_body_enabled=True)
+        b = _breach(eqp_id="EQP01")
+        template = {"html": "<p>custom @Severity</p>", "title": "Custom"}
         req = build_alert_request(
             b, _EQP, "CVD", s, NotifyChannel(cooldown_minutes=30),
             window_minutes=15, members=[b], eqp_lookup={"EQP01": _EQP},

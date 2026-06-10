@@ -70,6 +70,10 @@ _TOKEN_RE = re.compile(r"@(?:Row\.)?[A-Za-z]+")
 ERB_START = "<!--@EachEquipment-->"
 ERB_END = "<!--@EndEachEquipment-->"
 
+# A complete (balanced) ERB block, used to drop duplicate/leftover blocks whole
+# (markers + inner) so a bypass-written template can't leak markers or blank rows.
+_ERB_BLOCK_RE = re.compile(re.escape(ERB_START) + r"[\s\S]*?" + re.escape(ERB_END))
+
 # severity ordering for order_rows: lower rank sorts first (CRITICAL before WARNING)
 _SEV_RANK = {"CRITICAL": 0, "WARNING": 1}
 
@@ -128,6 +132,14 @@ def _substitute(
     return _TOKEN_RE.sub(repl, text)
 
 
+def _strip_erb(text: str) -> str:
+    """Remove any complete ERB blocks (markers + inner) then any lone marker, so
+    no ERB scaffolding leaks into the output. Used to sanitize the regions around
+    the one expanded block."""
+    text = _ERB_BLOCK_RE.sub("", text)
+    return text.replace(ERB_START, "").replace(ERB_END, "")
+
+
 def _expand_erb(
     template: str,
     rows: list[dict[str, Any]],
@@ -138,11 +150,24 @@ def _expand_erb(
 
     Caps rows at ``row_limit`` (None = no cap); dropped rows append
     ``overflow_text`` with ``@RemainingCount`` substituted. Scalar tokens inside
-    the block are left for the scalar pass. No ERB markers → returned unchanged."""
-    if ERB_START not in template:
+    the block are left for the scalar pass.
+
+    Total on malformed input (the WebManager save-time lint is the primary guard,
+    but RMS reads templates straight from Mongo, so seed/migration/manual edits
+    can bypass it): an unbalanced fence (START without a following END, or a lone
+    END) never raises — markers are stripped and rows are not expanded; only the
+    first balanced block expands and any extra/duplicate block is dropped whole so
+    no markers or blank rows leak."""
+    start = template.find(ERB_START)
+    end = template.find(ERB_END, start + len(ERB_START)) if start != -1 else -1
+    if start == -1 or end == -1:
+        if ERB_START in template or ERB_END in template:
+            logger.warning("rms_email_erb_unbalanced", has_start=start != -1)
+            return _strip_erb(template)
         return template
-    pre, rest = template.split(ERB_START, 1)
-    inner, post = rest.split(ERB_END, 1)
+    pre = template[:start]
+    inner = template[start + len(ERB_START):end]
+    post = template[end + len(ERB_END):]
     capped = rows if row_limit is None else rows[:row_limit]
     remaining = len(rows) - len(capped)
     pieces = []
@@ -150,7 +175,14 @@ def _expand_erb(
         row_map = {**row, "@Row.Index": i}
         pieces.append(_substitute(inner, row_map, only_provided=True))
     overflow = overflow_text.replace("@RemainingCount", str(remaining)) if remaining else ""
-    return pre + "".join(pieces) + overflow + post
+    if ERB_START in pre or ERB_END in pre or ERB_START in post or ERB_END in post:
+        logger.warning("rms_email_erb_extra_block")
+        pre = _strip_erb(pre)
+        post = _strip_erb(post)
+    result = pre + "".join(pieces) + overflow + post
+    if ERB_START in result or ERB_END in result:  # lone markers from a nested fence
+        result = result.replace(ERB_START, "").replace(ERB_END, "")
+    return result
 
 
 def _truncate_to_bytes(text: str, byte_cap: int) -> str:
