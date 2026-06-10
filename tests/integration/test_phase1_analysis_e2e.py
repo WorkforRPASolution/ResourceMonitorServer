@@ -49,7 +49,10 @@ _INTERVAL = 5  # all rules below use interval_minutes=5
 # ======================================================================
 # 공통 헬퍼
 # ======================================================================
-def _make_settings(email_url: str, ns: Any, *, custom_body: bool = False) -> AppSettings:
+def _make_settings(
+    email_url: str, ns: Any, *, custom_body: bool = False,
+    erb_row_limit: int = 50, body_byte_cap: int = 256000,
+) -> AppSettings:
     return AppSettings(
         es_hosts=["http://localhost:9200"],
         redis_url="redis://localhost:6379/15",
@@ -64,6 +67,9 @@ def _make_settings(email_url: str, ns: Any, *, custom_body: bool = False) -> App
         # Option C dark-launch flag: off by default so the legacy 9-field payload
         # tests are unaffected; flipped on per-test for the renderedBody cases.
         rms_custom_body_enabled=custom_body,
+        # size guards (D3): defaults match AppSettings; overridden by the cap smoke.
+        rms_erb_row_limit=erb_row_limit,
+        rms_body_byte_cap=body_byte_cap,
     )
 
 
@@ -187,8 +193,9 @@ async def phase1_db(real_mongo: Any, ns: Any):
 
 
 async def _drive(real_es, mongo_db, real_redis, ns, email_url, process, *, runs=1,
-                 custom_body=False):
-    settings = _make_settings(email_url, ns, custom_body=custom_body)
+                 custom_body=False, erb_row_limit=50, body_byte_cap=256000):
+    settings = _make_settings(email_url, ns, custom_body=custom_body,
+                              erb_row_limit=erb_row_limit, body_byte_cap=body_byte_cap)
     engine = _make_engine(real_es, mongo_db, real_redis, settings)
     await engine._deps.email_client.connect()
     results = []
@@ -415,6 +422,164 @@ async def test_group_by_model_collapses_to_one_email(real_es, phase1_db, real_re
     assert payload["hostname"] == "E2E-G-01"  # 대표 = 최소 eqpId
     assert set(payload["variables"]["AffectedEquipment"].split(", ")) == {"E2E-G-01", "E2E-G-02"}
     assert payload["variables"]["AffectedCount"] == "2"
+
+
+# ======================================================================
+# E6c — group_by 운영 스모크(로컬 재현): eqp=2통 vs model=1통 vs 2틱째=0통
+# 운영 핸드오프의 "group_by 스모크"를 실 ES/Mongo/Redis + 로컬 이메일 캡처 서버로
+# 흉내 낸다. -s 로 실행하면 내러티브가 출력된다.
+# ======================================================================
+async def test_group_by_smoke_eqp_vs_model_and_cooldown(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process = "E2E_GBSMOKE"
+    eqps = ["E2E-GB-01", "E2E-GB-02"]
+    index = await _seed_es(real_es, process, [
+        {"eqpId": eqps[0], "category": "cpu", "metric": "total_used_pct", "value": 91.0},
+        {"eqpId": eqps[1], "category": "cpu", "metric": "total_used_pct", "value": 99.0},
+    ])
+    for e in eqps:
+        await _seed_eqp_info(phase1_db, process, e, eqpModel="MODEL-GB")
+
+    def _profile(group_by: str) -> MonitorProfile:
+        return MonitorProfile(
+            scope=Scope(process=process),
+            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                              window_minutes=10, facts=[Fact(type="max")])],
+            rules=[_warn()],
+            notify={"default": NotifyChannel(cooldown_minutes=30, group_by=group_by)},
+        )
+
+    recv = mock_email_server["received"]
+    url = mock_email_server["url"]
+    try:
+        # 1) group_by="eqp"(기본): 장비마다 1통 = 2통 (현행 동작/회귀 가드)
+        await _seed_profile(phase1_db, _profile("eqp"))
+        recv.clear()
+        await _drive(real_es, phase1_db, real_redis, ns, url, process)
+        eqp_emails = len(recv)
+        eqp_hosts = sorted(p["hostname"] for p in recv)
+
+        # 2) group_by="model": 동일 모델 2대 → 1통(대표 eqp + AffectedEquipment)
+        #    (model 키는 eqp 키와 달라 위 eqp 쿨다운의 영향을 받지 않는다)
+        await _seed_profile(phase1_db, _profile("model"))
+        recv.clear()
+        await _drive(real_es, phase1_db, real_redis, ns, url, process)
+        model_emails = len(recv)
+        model_payload = recv[0] if recv else None
+
+        # 3) 같은 모델로 한 틱 더 → 그룹 쿨다운으로 억제 = 0통
+        recv.clear()
+        await _drive(real_es, phase1_db, real_redis, ns, url, process)
+        model_2nd = len(recv)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    print("\n========== group_by 스모크 (로컬 실 ES/Mongo/Redis + 캡처 서버) ==========")
+    print(f"  동일 모델(MODEL-GB) 장비 2대 동시 breach: {eqps}")
+    print(f"  [group_by=eqp]            → 이메일 {eqp_emails}통  hostname={eqp_hosts}   ← 현행")
+    if model_payload:
+        print(f"  [group_by=model]          → 이메일 {model_emails}통  대표={model_payload['hostname']}  "
+              f"AffectedEquipment=[{model_payload['variables']['AffectedEquipment']}]  "
+              f"AffectedCount={model_payload['variables']['AffectedCount']}")
+    print(f"  [group_by=model 2틱째]    → 이메일 {model_2nd}통  (그룹 쿨다운 억제)")
+    print("=========================================================================")
+
+    # 검증: eqp=2, model=1(대표=min eqp + 둘 다 affected), 2틱째=0
+    assert eqp_emails == 2, "group_by=eqp 는 장비마다 1통(회귀)"
+    assert eqp_hosts == eqps
+    assert model_emails == 1, "group_by=model 은 동일 모델 다중 장비를 1통으로 집계"
+    assert model_payload["hostname"] == eqps[0]  # 대표 = 최소 eqpId
+    assert set(model_payload["variables"]["AffectedEquipment"].split(", ")) == set(eqps)
+    assert model_payload["variables"]["AffectedCount"] == "2"
+    assert model_2nd == 0, "그룹 쿨다운이 2틱째를 억제"
+
+
+# ======================================================================
+# E6d — 사이즈 캡 스모크(D3 동작 흉내): 행 캡(ERB_ROW_LIMIT) + byte 캡(BODY_BYTE_CAP)
+# 실제 한도값은 prod Redis/ESB에서만 측정 가능하지만, 캡이 본문을 실제로 자르고
+# 마커를 붙이는 동작은 로컬에서 재현한다. -s 로 내러티브 출력.
+# ======================================================================
+_CAP_TPL_HTML = (
+    "<h3>@Severity 임계 초과 · 공정 @Process · 영향 @AffectedCount대</h3>"
+    "<table><tr><th>장비</th><th>지표</th><th>현재값</th></tr>"
+    "<!--@EachEquipment-->"
+    "<tr><td>@Row.EqpId</td><td>사용률</td><td>@Row.CurrentValue</td></tr>"
+    "<!--@EndEachEquipment--></table>"
+)
+_CAP_TPL_TITLE = "[EARS] @Severity @Process"
+
+
+async def _seed_cap_scenario(real_es, mongo_db, process, model, n):
+    eqps = [f"{process}-{i:02d}" for i in range(n)]
+    index = await _seed_es(real_es, process, [
+        {"eqpId": e, "category": "cpu", "metric": "total_used_pct", "value": 90.0 + i}
+        for i, e in enumerate(eqps)
+    ])
+    for e in eqps:
+        await _seed_eqp_info(mongo_db, process, e, eqpModel=model)
+    await _seed_template(mongo_db, process=process, model=model, subcode="CPU_WARNING",
+                         html=_CAP_TPL_HTML, title=_CAP_TPL_TITLE)
+    await _seed_profile(mongo_db, MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[_warn()],
+        notify={"default": NotifyChannel(cooldown_minutes=30, group_by="model")},
+    ))
+    return index, eqps
+
+
+async def test_size_cap_smoke_row_and_byte(real_es, phase1_db, real_redis, ns, mock_email_server):
+    recv = mock_email_server["received"]
+    url = mock_email_server["url"]
+
+    # ---------- 행 캡: 12대 breach, ERB_ROW_LIMIT=5 → 표는 5행 + "외 7대" ----------
+    procA, N, ROW_LIMIT = "E2E-CAPROW", 12, 5
+    idxA, _eqpsA = await _seed_cap_scenario(real_es, phase1_db, procA, "MODEL-CAPROW", N)
+    recv.clear()
+    try:
+        await _drive(real_es, phase1_db, real_redis, ns, url, procA,
+                     custom_body=True, erb_row_limit=ROW_LIMIT)
+    finally:
+        await real_es.indices.delete(index=idxA, ignore=[404])
+    row_body = recv[0]["renderedBody"]
+    rows_rendered = row_body.count(procA + "-")          # 표에 실제 렌더된 eqp 행 수
+    affected_count = recv[0]["variables"]["AffectedCount"]
+    has_overflow = ("외 " in row_body) and ("있습니다" in row_body)
+
+    # ---------- byte 캡: 20대 breach, BODY_BYTE_CAP=400 → 절단 + 마커, 멀티바이트 안전 ----------
+    procB, M, BYTE_CAP = "E2E-CAPBYTE", 20, 400
+    idxB, _eqpsB = await _seed_cap_scenario(real_es, phase1_db, procB, "MODEL-CAPBYTE", M)
+    recv.clear()
+    try:
+        await _drive(real_es, phase1_db, real_redis, ns, url, procB,
+                     custom_body=True, body_byte_cap=BYTE_CAP)
+    finally:
+        await real_es.indices.delete(index=idxB, ignore=[404])
+    byte_body = recv[0]["renderedBody"]
+    byte_len = len(byte_body.encode("utf-8"))
+    has_trunc = "<!-- truncated -->" in byte_body
+    no_mojibake = "�" not in byte_body              # 깨진 멀티바이트(U+FFFD) 없음
+
+    print("\n========== 사이즈 캡 스모크 (로컬 실 ES/Mongo/Redis + 캡처 서버) ==========")
+    print(f"  [행 캡]  장비 {N}대 breach, ERB_ROW_LIMIT={ROW_LIMIT}")
+    print(f"      → renderedBody 표에 {rows_rendered}행만 렌더 + 초과 마커={has_overflow}  "
+          f"(AffectedCount={affected_count} — 전체 유지)")
+    print(f"  [byte 캡] 장비 {M}대 breach, BODY_BYTE_CAP={BYTE_CAP}")
+    print(f"      → renderedBody {byte_len} bytes (≤{BYTE_CAP}), truncated 마커={has_trunc}, "
+          f"멀티바이트 안전(U+FFFD 없음)={no_mojibake}")
+    print("=========================================================================")
+
+    # 행 캡 검증
+    assert rows_rendered == ROW_LIMIT
+    assert "외 7대 더 있습니다" in row_body              # RemainingCount = 12-5 = 7
+    assert f"{procA}-00" not in row_body                  # 최저값 장비는 표에서 잘림
+    assert affected_count == str(N)                      # affected 변수는 전체 12 유지
+    # byte 캡 검증
+    assert byte_len <= BYTE_CAP
+    assert has_trunc
+    assert no_mojibake                                   # 멀티바이트 경계 안전
 
 
 # ======================================================================

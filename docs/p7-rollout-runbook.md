@@ -19,6 +19,7 @@
 - [ ] RMS: `src/alert/{tokens,body_renderer}.py`, `src/analyzer/alert_builder.py`(플래그 분기), `src/alert/models.py`(`renderedBody`/`title` 조건부 직렬화), `src/db/repository.py`(5-tier 폴백 accessor) 머지.
 - [ ] Akka(HttpWebServer): `JsonInterfaces.scala`(`renderedBody`/`title: Option[String]`), `EmailBodyResolver.scala`, `EmailWorker.scala`(SendEmail renderedBody 분기 + legacy `else` byte-unchanged) 머지.
 - [ ] WebManager: `server/features/rms-email-template/`(CRUD), `client/src/features/rms-email-template/`(편집기·렌더러·lint) 머지.
+- [ ] **ERB 펜스 견고성(2026-06 감사)**: RMS 렌더러 `body_renderer._expand_erb` total화(불균형/다중 ERB 무예외·무누출, `tests/unit/test_body_renderer.py::TestMalformedErbIsTotal`). WebManager 서버 검증(`erbValidation.js`)·클라 lint는 1차 가드. **WebManager JS 프리뷰 렌더러 미러는 보류** → `docs/rms-email-erb-hardening-webmanager-handoff.md`로 별도 적용(byte-패리티). on 전환 전 JS 미러 완료 권장.
 - [ ] 플래그 **OFF 확인**: `MONITOR_RMS_CUSTOM_BODY_ENABLED` 미설정 또는 `false`(기본 False).
 - [ ] 사이즈 가드 기본값: `MONITOR_RMS_ERB_ROW_LIMIT=50`, `MONITOR_RMS_BODY_BYTE_CAP=256000`.
 
@@ -126,3 +127,19 @@ legacy 경로는 byte-unchanged라 **현행 100% 복귀**(페이로드 9필드).
 - **catch-all 시드 prod 실행**(§2-1 `-Yes`): 스크립트는 작성·검증 완료, prod 실행은 운영.
 - **플래그 flip + 배포**(§3) 및 실 배달 확인.
 - **TinyMCE 편집기 대화형 검증**: 주석 마커 보존, 토큰/ERB 클릭 삽입, 탭 전환(브라우저 수동).
+- **WebManager JS 렌더러 ERB 미러**(§1): `docs/rms-email-erb-hardening-webmanager-handoff.md` 적용(별도 WebManager 세션, byte-패리티). on 전환 전 권장.
+
+## 10. notify.group_by — 발송 단위 집계 (별도 기능, 다크런치 불필요)
+
+광범위 scope에서 장비 N대 동시 breach 시 메일 N통 → 1통으로 줄이는 집계 발송.
+**Option C와 독립**이며 플래그/다크런치가 없다.
+
+- **환경변수 없음** — notify 채널별 설정(`group_by`, `representatives`).
+- **하위호환/회귀 0**: 기존 notify는 `group_by="eqp"`(기본)로 로드 → 동작·페이로드·쿨다운 키 불변.
+- **자동 재시드 없음**: startup 자동 seed는 제거됨(`seed.py` 미import) → group_by 추가로 인한 해시 변동/재시드 우려 없음.
+- **활성화**: 운영자가 notify 채널에 `group_by: "model"`(또는 `"process"`) + 선택 `representatives: {그룹값: 대표eqpId}` 설정. `PATCH /profiles/{...}/notify/{name}` 또는 playground 가이드(`docs/resource-monitor-profile-playground.html`) 참조.
+- **스모크**: 한 채널 `group_by=model` → 동일 모델 2대 동시 breach 유발 → 메일 **1통**(본문 `@AffectedEquipment` 목록·`@AffectedCount`) + 쿨다운 **1회**(2틱째 억제 확인).
+- **라우팅 한계(중요)**: `process` 그룹은 모델 혼재 시 **대표 1대의 emailCategory만** 통지 → 타 모델 수신자 누락 가능. 운영자는 `model` 단위 사용 또는 `representatives`로 대표 지정 권장. (SCHEMA §1.5 / schema-guide.html §8 / `db/models.py` docstring 명시.)
+
+검증(단위): `pytest tests/unit/test_analysis_engine.py tests/unit/test_alert_builder.py -q`
+(그룹 집계·대표 폴백·그룹 쿨다운·eqp 회귀 가드 포함, 현재 그린).
