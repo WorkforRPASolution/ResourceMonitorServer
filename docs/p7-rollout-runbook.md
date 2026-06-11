@@ -19,7 +19,7 @@
 - [ ] RMS: `src/alert/{tokens,body_renderer}.py`, `src/analyzer/alert_builder.py`(플래그 분기), `src/alert/models.py`(`renderedBody`/`title` 조건부 직렬화), `src/db/repository.py`(5-tier 폴백 accessor) 머지.
 - [ ] Akka(HttpWebServer): `JsonInterfaces.scala`(`renderedBody`/`title: Option[String]`), `EmailBodyResolver.scala`, `EmailWorker.scala`(SendEmail renderedBody 분기 + legacy `else` byte-unchanged) 머지.
 - [ ] WebManager: `server/features/rms-email-template/`(CRUD), `client/src/features/rms-email-template/`(편집기·렌더러·lint) 머지.
-- [ ] **ERB 펜스 견고성(2026-06 감사)**: RMS 렌더러 `body_renderer._expand_erb` total화(불균형/다중 ERB 무예외·무누출, `tests/unit/test_body_renderer.py::TestMalformedErbIsTotal`). WebManager 서버 검증(`erbValidation.js`)·클라 lint는 1차 가드. **WebManager JS 프리뷰 렌더러 미러는 보류** → `docs/rms-email-erb-hardening-webmanager-handoff.md`로 별도 적용(byte-패리티). on 전환 전 JS 미러 완료 권장.
+- [x] **ERB 펜스 견고성(2026-06 감사)**: RMS 렌더러 `body_renderer._expand_erb` total화(불균형/다중 ERB 무예외·무누출, `tests/unit/test_body_renderer.py::TestMalformedErbIsTotal`). WebManager 서버 검증(`erbValidation.js`)·클라 lint는 1차 가드. **WebManager JS 프리뷰 렌더러 미러 완료**(2026-06-11 확인) — `bodyRenderer.js`의 `stripErb`/`ERB_BLOCK_RE`/`expandErb`가 Python canon(`_ERB_BLOCK_RE`)과 byte-패리티(적용 기준: `docs/rms-email-erb-hardening-webmanager-handoff.md`). **게이트 충족** — on 전환 전 별도 조치 불필요.
 - [ ] 플래그 **OFF 확인**: `MONITOR_RMS_CUSTOM_BODY_ENABLED` 미설정 또는 `false`(기본 False).
 - [ ] 사이즈 가드 기본값: `MONITOR_RMS_ERB_ROW_LIMIT=50`, `MONITOR_RMS_BODY_BYTE_CAP=256000`.
 
@@ -60,7 +60,7 @@ db.RESOURCE_MONITOR_EMAIL_TEMPLATE.findOne({app:"ARS",process:"_",model:"_",code
 
 RMS (`ResourceMonitorServer/`, venv):
 ```bash
-python -m pytest tests/ -q            # 전체 그린(현재 798 passed 기준) — 회귀 가드 #1/#2
+python -m pytest tests/ -q            # 전체 그린(현재 828 passed, 1 skipped 기준) — 회귀 가드 #1/#2
 python -m pytest tests/unit/test_akka_contract.py -q          # 와이어 계약(rendered/legacy)
 python -m pytest tests/unit/test_body_renderer.py -q          # 렌더러(escape/ERB/캡/제목 콜론)
 python -m pytest tests/unit/test_alert_builder.py -q          # 플래그 on/off, 템플릿 미스→DEFAULT_BODY 폴백
@@ -78,10 +78,10 @@ mvn test    # EmailHttpDataFormatSpec(legacy→None/None, rendered→Some/Some),
 
 WebManager (`WebManager/`):
 ```bash
-cd server && npm test    # 서버 전체(rms-email-template 포함, 현재 1243 passed 기준)
-cd ../client && npm test # 클라 — rms-email-template 35개 + golden byte-동일 드리프트 가드
+cd server && npm test    # 서버 전체(rms-email-template 포함)
+cd ../client && npm test # 클라 — rms-email-template(bodyRenderer malformed ERB 포함) + golden byte-동일 드리프트 가드
 ```
-> 주의: 클라에 **기존·무관 실패 13건**(`features/clients/components/config-form` ResourceAgent)이 있음 — 이 기능과 무관. `src/features/rms-email-template`·`src/features/permissions`가 그린이면 OK.
+> 주의: 클라에 **기존·무관 실패**(`features/clients/components/config-form` ResourceAgent)가 있을 수 있음 — 이 기능과 무관. **절대 통과 수치는 시점에 따라 변동**하므로, `src/features/rms-email-template`·`src/features/permissions`가 그린인지로 판정.
 
 ### 4-2. D3 사이즈 실측 (⚠ 운영 핸드오프 — 코드 아님)
 Redis pub/sub payload 허용·ESB 본문 cap은 **외부/미상**. 플래그 on 전 실 클러스터에서 측정해
@@ -126,8 +126,8 @@ legacy 경로는 byte-unchanged라 **현행 100% 복귀**(페이로드 9필드).
 - **D3 실측**(§4-2): 실 Redis/ESB 한계 측정 → 가드 보정.
 - **catch-all 시드 prod 실행**(§2-1 `-Yes`): 스크립트는 작성·검증 완료, prod 실행은 운영.
 - **플래그 flip + 배포**(§3) 및 실 배달 확인.
-- **TinyMCE 편집기 대화형 검증**: 주석 마커 보존, 토큰/ERB 클릭 삽입, 탭 전환(브라우저 수동).
-- **WebManager JS 렌더러 ERB 미러**(§1): `docs/rms-email-erb-hardening-webmanager-handoff.md` 적용(별도 WebManager 세션, byte-패리티). on 전환 전 권장.
+- **TinyMCE 편집기 검증**: Playwright E2E가 `WebManager/e2e/rms-email-template.spec.js`에 작성됨(편집기 열기→ERB/토큰 삽입→Preview 캐논 렌더 단언). 단 **아직 미커밋(untracked)** → WebManager 세션에서 커밋·CI 편입 필요. 그 전까지는 브라우저 수동 확인 병행.
+- ~~**WebManager JS 렌더러 ERB 미러**~~ → **완료**(§1, 2026-06-11 확인): `bodyRenderer.js` 미러 적용·byte-패리티 확인됨. 더는 핸드오프 항목 아님.
 
 ## 10. notify.group_by — 발송 단위 집계 (별도 기능, 다크런치 불필요)
 
