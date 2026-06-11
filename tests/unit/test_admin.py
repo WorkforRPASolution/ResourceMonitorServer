@@ -29,6 +29,7 @@ def app() -> FastAPI:
     sched._scheduler = MagicMock()
     sched._scheduler.get_jobs = MagicMock(return_value=[])
     sched.reload = AsyncMock()
+    sched.reconcile = AsyncMock(return_value=True)
     a.state.scheduler = sched
 
     zk = MagicMock()
@@ -96,12 +97,35 @@ class TestAdminCooldownClear:
 
 @pytest.mark.unit
 class TestAdminSchedulerReload:
-    def test_reload_calls_scheduler(self, app):
+    def test_reload_triggers_reconcile(self, app):
+        # The old reload() with no args was a no-op in prod (logged a warning
+        # and returned). The endpoint now drives the cadence reconcile, which
+        # works in both normal and debug mode.
         with TestClient(app) as client:
             r = client.post("/admin/scheduler/reload")
         assert r.status_code == 200
-        assert r.json()["reloaded"] is True
-        app.state.scheduler.reload.assert_awaited_once()
+        assert r.json()["reconciled"] is True
+        app.state.scheduler.reconcile.assert_awaited_once()
+        app.state.scheduler.reload.assert_not_awaited()
+
+    def test_reload_reports_no_change(self, app):
+        app.state.scheduler.reconcile = AsyncMock(return_value=False)
+        with TestClient(app) as client:
+            r = client.post("/admin/scheduler/reload")
+        assert r.status_code == 200
+        assert r.json()["reconciled"] is False
+
+    def test_reload_503_when_mongo_unavailable(self, app):
+        # Mongo down during reconcile must surface as 503 (transient,
+        # retryable) — consistent with the profile write API — not a 500.
+        from src.db.models import MongoUnavailableError
+
+        app.state.scheduler.reconcile = AsyncMock(
+            side_effect=MongoUnavailableError("down")
+        )
+        with TestClient(app) as client:
+            r = client.post("/admin/scheduler/reload")
+        assert r.status_code == 503
 
 
 @pytest.mark.unit

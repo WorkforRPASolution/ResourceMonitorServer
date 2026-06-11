@@ -24,6 +24,9 @@ class SchedulerDeps:
     cooldown_mgr: Any
     email_client: Any
     query_builder: Any
+    # Option C: read-only RMS_EMAIL_TEMPLATE accessor. Default None so existing
+    # constructions stay valid; only read when rms_custom_body_enabled.
+    template_repo: Any = None
 
 
 async def init_scheduler(

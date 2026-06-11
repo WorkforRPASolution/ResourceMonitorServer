@@ -159,6 +159,23 @@ class TestRuleAndNotify:
         n = NotifyChannel(cooldown_minutes=30)
         assert n.email_code == "RESOURCE_MONITOR" and n.email_subcode is None
 
+    def test_notify_group_by_defaults_eqp(self):
+        n = NotifyChannel(cooldown_minutes=30)
+        assert n.group_by == "eqp" and n.representatives == {}
+
+    def test_notify_group_by_accepts_model_and_process(self):
+        assert NotifyChannel(cooldown_minutes=30, group_by="model").group_by == "model"
+        assert NotifyChannel(cooldown_minutes=30, group_by="process").group_by == "process"
+
+    def test_notify_group_by_rejects_unknown(self):
+        with pytest.raises(ValidationError):
+            NotifyChannel(cooldown_minutes=30, group_by="rack")
+
+    def test_notify_representatives_map(self):
+        n = NotifyChannel(cooldown_minutes=30, group_by="model",
+                          representatives={"MODEL_A": "EQP001"})
+        assert n.representatives["MODEL_A"] == "EQP001"
+
     def test_governance_defaults(self):
         g = Governance()
         assert g.version == 1 and g.updated_by == ""

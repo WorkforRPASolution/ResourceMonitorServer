@@ -257,12 +257,13 @@ debug 모드는 스키마를 건드리지 않으므로 **`RESOURCE_MONITOR_PROFI
 > 분석이 실제로 돌려면 해당 process 에 **활성 EQP_INFO 장비**(`onoff=1, webmanagerUse=1`)도 있어야 합니다. 로컬 Mongo면 EQP_INFO 문서도 같이 넣어야 합니다.
 
 ### 7-3. 분석 트리거 + 확인
-debug 모드는 자동 reload 가 없으므로 수동 트리거합니다:
+debug 모드는 주기 reconcile 루프가 돌지 않으므로(관찰자 계약) 수동 트리거합니다. 이 엔드포인트는 이제 **cadence reconcile**을 수행해 소유 process 의 job 을 (재)등록합니다(`{"reconciled": true|false}` 반환):
 ```powershell
 Invoke-RestMethod -Method Post http://localhost:8080/admin/scheduler/reload
 Invoke-RestMethod http://localhost:8080/admin/status | ConvertTo-Json -Depth 5   # scheduled_jobs 확인
 ```
-- 앱 로그 `scheduler_reloaded` 의 `job_count` 가 0 이면 → 해당 process 에 프로파일이 없는 것.
+- 앱 로그 `scheduler_reconciled` 의 `added`/`removed`/`job_count` 로 반영 결과 확인. 잡이 안 생기면 → 해당 process 에 활성 rule 프로파일이 없는 것.
+- (참고) 정상 모드에선 프로파일을 편집하면 위 호출 없이도 쓰기 직후 자동 reconcile + 주기 루프(`MONITOR_SCHEDULER_RECONCILE_INTERVAL_SEC`, 기본 60초)로 반영됩니다.
 - 잡은 rule 의 `interval_minutes` 마다 틱 → 첫 분석은 그 간격 후(`/admin/status` 의 `next_run` 확인).
 - 임계 초과 시 로그에 **`debug_would_send_email`**(발송 suppress)이 뜨면 **조회→분석→알림 전 구간이 운영 데이터로 검증된 것**입니다.
 

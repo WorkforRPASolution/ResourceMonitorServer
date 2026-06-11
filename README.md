@@ -109,7 +109,7 @@ Debug 모드 전용 옵션:
 | `GET /admin/status` | 인스턴스/리더/파티션/스케줄 상태 |
 | `GET /admin/email-outbox` | 최근 실패한 email 발송 outbox snapshot (in-memory `deque(maxlen=1000)`, 최신 50건). v6 P1-3 — Phase 0 의 in-process DLQ. **pod 재시작 시 휘발** |
 | `DELETE /admin/cooldowns?process&eqp_id&proc&notify&severity` | 쿨다운 강제 해제 (v2 5-차원 식별자, query param) |
-| `POST /admin/scheduler/reload` | 프로파일 재로드 |
+| `POST /admin/scheduler/reload` | 소유 공정의 평가주기(cadence) 즉시 reconcile — 프로파일 interval 변경분만 job에 반영(`{reconciled}` 반환). 내용(임계값 등) 변경은 엔진이 매 tick 자동 반영하므로 불필요 |
 
 ## 디렉토리 구조
 

@@ -23,7 +23,12 @@ from typing import Any, NamedTuple
 import structlog
 
 from src.analyzer import fact_catalog as fc
-from src.analyzer.alert_builder import build_alert_request, make_cooldown_key
+from src.analyzer.alert_builder import (
+    build_alert_request,
+    make_cooldown_key,
+    resolve_code_subcode,
+    resolve_group_value,
+)
 from src.analyzer.es_parser import parse_metric_aggregation
 from src.analyzer.metric_resolver import resolve_metric_patterns
 from src.analyzer.threshold import AnalysisResult, ThresholdBreach, evaluate_rule
@@ -109,7 +114,7 @@ class AnalysisEngine:
 
         breaches = [p.breach for p in pending]
         if pending:
-            await self._dispatch(process, pending, eqp_lookup)
+            await self._dispatch(process, pending, eqp_lookup, now)
 
         return AnalysisResult(
             process=process,
@@ -222,31 +227,72 @@ class AnalysisEngine:
         process: str,
         pending: list[_Pending],
         eqp_lookup: dict[str, dict[str, Any]],
+        now: datetime,
     ) -> None:
-        """Cooldown-gate and send one email per (eqp, proc, notify, severity)."""
-        checks = list({
-            make_cooldown_key(process, p.breach, p.notify_name) for p in pending
-        })
-        cooling = await self._deps.cooldown_mgr.is_cooling_down_batch(checks)
+        """Cooldown-gate and send one email per group.
 
-        sent: set[tuple[str, str, str, str, str]] = set()
+        The group identity is the cooldown key ``(process, group, proc, notify,
+        severity)`` where ``group`` is the eqpId (``group_by="eqp"``, current
+        behaviour) or the model/process value. Equipment breaching under one
+        group collapse into a single email addressed via a representative
+        equipment's emailCategory (pinned via ``channel.representatives`` else
+        the smallest breaching eqpId); the affected equipment are listed in the
+        alert variables (group modes only)."""
+        # 1. bucket pending by group cooldown key
+        groups: dict[tuple[str, str, str, str, str], list[_Pending]] = {}
+        group_value_by_key: dict[tuple[str, str, str, str, str], str] = {}
         for p in pending:
             eqp_info = eqp_lookup.get(p.breach.eqp_id)
             if eqp_info is None:
                 logger.debug("eqp_not_in_lookup", eqp_id=p.breach.eqp_id, process=process)
                 continue
-            key = make_cooldown_key(process, p.breach, p.notify_name)
-            if cooling.get(key, False) or key in sent:
-                ALERTS_SUPPRESSED.labels(
-                    process=process, metric=p.breach.fact, severity=p.breach.severity
-                ).inc()
+            gv = resolve_group_value(p.channel.group_by, p.breach, eqp_info, process)
+            key = make_cooldown_key(process, p.breach, p.notify_name, group_value=gv)
+            groups.setdefault(key, []).append(p)
+            group_value_by_key[key] = gv
+
+        if not groups:
+            return
+        cooling = await self._deps.cooldown_mgr.is_cooling_down_batch(list(groups))
+
+        # 2. one email per group
+        for key, members in groups.items():
+            if cooling.get(key, False):
+                for m in members:
+                    ALERTS_SUPPRESSED.labels(
+                        process=process, metric=m.breach.fact, severity=m.breach.severity
+                    ).inc()
                 continue
+            channel = members[0].channel
+            group_value = group_value_by_key[key]
+            breaching_eqps = sorted({m.breach.eqp_id for m in members})
+            # representative: operator-pinned (if it actually breached) else min
+            rep_eqp = channel.representatives.get(group_value)
+            if rep_eqp not in breaching_eqps:
+                rep_eqp = breaching_eqps[0]
+            rep = next(m for m in members if m.breach.eqp_id == rep_eqp)
+            affected = breaching_eqps if channel.group_by != "eqp" else None
+            # Option C: when enabled, fetch the operator template (async) here —
+            # keeping build_alert_request synchronous (review fix). Off → no fetch,
+            # payload stays the legacy 9 fields.
+            template = None
+            if self._settings.rms_custom_body_enabled:
+                code, subcode = resolve_code_subcode(channel, rep.breach)
+                template = await self._deps.template_repo.find_template(
+                    self._settings.email_app_name,
+                    process,
+                    eqp_lookup[rep_eqp].get("eqpModel", ""),
+                    code,
+                    subcode,
+                )
             alert = build_alert_request(
-                p.breach, eqp_info, process, self._settings, p.channel, p.window_minutes
+                rep.breach, eqp_lookup[rep_eqp], process, self._settings,
+                channel, rep.window_minutes, affected_equipment=affected,
+                members=[m.breach for m in members], eqp_lookup=eqp_lookup,
+                timestamp=now, template=template,
             )
             if await self._deps.email_client.send_alert(alert):
                 await self._deps.cooldown_mgr.set_cooldown(
-                    *key, p.channel.cooldown_minutes
+                    *key, channel.cooldown_minutes
                 )
-                sent.add(key)
                 ALERTS_SENT.labels(code=alert.code, subcode=alert.subcode).inc()

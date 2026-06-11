@@ -50,10 +50,18 @@ def repo() -> MagicMock:
 
 
 @pytest.fixture
-def client(repo) -> TestClient:
+def scheduler() -> MagicMock:
+    s = MagicMock()
+    s.reconcile = AsyncMock(return_value=True)
+    return s
+
+
+@pytest.fixture
+def client(repo, scheduler) -> TestClient:
     app = FastAPI()
     app.include_router(profiles.router)
     app.state.repos = SimpleNamespace(profile_repo=repo)
+    app.state.scheduler = scheduler
     return TestClient(app)
 
 
@@ -277,6 +285,20 @@ class TestItemCrud:
         assert r.status_code == 200
         repo.replace_with_version.assert_awaited_once()
 
+    def test_patch_notify_group_by_roundtrips(self, client, repo):
+        repo.find_by_scope.return_value = _overlay()
+        repo.collect_scope_docs.return_value = [_overlay()]
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "channel": {"cooldown_minutes": 30, "group_by": "model",
+                        "representatives": {"MODEL_A": "EQP001"}},
+        }
+        r = client.patch("/profiles/notify/default", json=body)
+        assert r.status_code == 200
+        overlay = repo.replace_with_version.await_args.args[0]
+        assert overlay.notify["default"].group_by == "model"
+        assert overlay.notify["default"].representatives == {"MODEL_A": "EQP001"}
+
     def _process_doc(self):
         return MonitorProfile(
             scope=Scope(process="CVD"),
@@ -396,3 +418,72 @@ class TestItemCrud:
                      "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
         }
         assert client.post("/profiles/rules", json=body).status_code == 409
+
+
+class TestWriteTriggersReconcile:
+    """E gating: every successful profile write fires a best-effort cadence
+    reconcile so an interval change takes effect immediately (locally) without
+    a pod restart. reconcile() itself no-ops when the cadence is unchanged, so
+    triggering on every write is safe."""
+
+    _CREATE_BODY = {
+        "scope": {"process": "CVD"},
+        "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct",
+                      "window_minutes": 15, "facts": [{"type": "max"}]}],
+        "rules": [{"id": "w", "interval_minutes": 5, "severity": "WARNING",
+                   "when": [{"fact": "cpu.max", "op": ">=", "value": 80}]}],
+        "notify": {"default": {"cooldown_minutes": 30}},
+    }
+
+    def test_create_triggers_reconcile(self, client, repo, scheduler):
+        r = client.post("/profiles", json=self._CREATE_BODY)
+        assert r.status_code == 201
+        scheduler.reconcile.assert_awaited_once()
+
+    def test_replace_triggers_reconcile(self, client, repo, scheduler):
+        repo.collect_scope_docs.return_value = []
+        body = {**self._CREATE_BODY, "expected_version": 1}
+        r = client.put("/profiles", json=body)
+        assert r.status_code == 200
+        scheduler.reconcile.assert_awaited_once()
+
+    def test_delete_triggers_reconcile(self, client, repo, scheduler):
+        r = client.delete("/profiles", params={"process": "CVD", "version": 3})
+        assert r.status_code == 200
+        scheduler.reconcile.assert_awaited_once()
+
+    def test_add_rule_triggers_reconcile(self, client, repo, scheduler):
+        # exercises the _commit chokepoint shared by measures/rules/notify
+        repo.find_by_scope.return_value = _overlay()
+        repo.collect_scope_docs.return_value = [_overlay()]
+        body = {
+            "scope": {"process": "*"}, "expected_version": 1,
+            "rule": {"id": "cpu_crit", "interval_minutes": 10, "severity": "CRITICAL",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 200
+        scheduler.reconcile.assert_awaited_once()
+
+    def test_failed_write_does_not_trigger_reconcile(self, client, repo, scheduler):
+        repo.create.side_effect = ProfileAlreadyExistsError(Scope(process="CVD"))
+        r = client.post("/profiles", json=self._CREATE_BODY)
+        assert r.status_code == 409
+        scheduler.reconcile.assert_not_awaited()
+
+    def test_write_succeeds_even_if_reconcile_raises(self, client, repo, scheduler):
+        # reconcile is best-effort: a scheduler blip must NOT fail the write.
+        scheduler.reconcile = AsyncMock(side_effect=RuntimeError("scheduler busy"))
+        r = client.post("/profiles", json=self._CREATE_BODY)
+        assert r.status_code == 201
+        scheduler.reconcile.assert_awaited_once()
+
+    def test_write_succeeds_when_scheduler_absent(self, repo):
+        # partial startup / harness without a scheduler on app.state → write
+        # still succeeds (optional dependency, trigger skipped).
+        app = FastAPI()
+        app.include_router(profiles.router)
+        app.state.repos = SimpleNamespace(profile_repo=repo)
+        c = TestClient(app)
+        r = c.post("/profiles", json=self._CREATE_BODY)
+        assert r.status_code == 201

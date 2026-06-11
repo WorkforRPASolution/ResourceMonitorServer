@@ -40,10 +40,19 @@ class EmailAlertRequest(BaseModel):
     code: str
     subcode: str
     variables: dict[str, str]
+    # Option C (additive, backward-compatible). When the custom-body feature is
+    # off these stay None and are omitted from the payload, so Akka receives the
+    # legacy 9 fields. When set, RMS has pre-rendered the full HTML body/subject;
+    # Akka uses them directly (json4s Option[String] tolerates absence — D7/§5-④).
+    rendered_body: str | None = Field(default=None, alias="renderedBody")
+    title: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        """Return the JSON body Akka expects, using `model` not `eqp_model`."""
-        return {
+        """Return the JSON body Akka expects, using `model` not `eqp_model`.
+
+        `renderedBody`/`title` are included only when set, preserving the exact
+        legacy 9-field payload in dark-launch/off mode."""
+        payload: dict[str, Any] = {
             "hostname": self.hostname,
             "ip": self.ip,
             "app": self.app,
@@ -54,3 +63,8 @@ class EmailAlertRequest(BaseModel):
             "subcode": self.subcode,
             "variables": self.variables,
         }
+        if self.rendered_body is not None:
+            payload["renderedBody"] = self.rendered_body
+        if self.title is not None:
+            payload["title"] = self.title
+        return payload

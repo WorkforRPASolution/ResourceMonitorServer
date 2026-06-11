@@ -77,3 +77,43 @@ class TestEmailAlertRequest:
             variables={},
         )
         assert req.variables == {}
+
+    def test_rendered_body_title_default_none(self):
+        req = EmailAlertRequest(
+            hostname="H", ip="1.1.1.1", app="ARS", process="P",
+            eqp_model="M", line="L", code="C", subcode="S", variables={},
+        )
+        assert req.rendered_body is None
+        assert req.title is None
+
+    def test_to_payload_omits_rendered_body_title_when_none(self):
+        """Dark-launch / legacy: with no custom body, payload stays 9 fields."""
+        req = EmailAlertRequest(
+            hostname="H", ip="1.1.1.1", app="ARS", process="P",
+            eqp_model="M", line="L", code="C", subcode="S", variables={"K": "V"},
+        )
+        payload = req.to_payload()
+        assert "renderedBody" not in payload
+        assert "title" not in payload
+        assert set(payload.keys()) == {
+            "hostname", "ip", "app", "process", "model", "line",
+            "code", "subcode", "variables",
+        }
+
+    def test_to_payload_includes_rendered_body_title_when_set(self):
+        req = EmailAlertRequest(
+            hostname="H", ip="1.1.1.1", app="ARS", process="P",
+            eqp_model="M", line="L", code="C", subcode="S", variables={},
+            rendered_body="<p>x</p>", title="[EARS] t",
+        )
+        payload = req.to_payload()
+        assert payload["renderedBody"] == "<p>x</p>"
+        assert payload["title"] == "[EARS] t"
+
+    def test_rendered_body_parses_from_camel_alias(self):
+        req = EmailAlertRequest.model_validate({
+            "hostname": "H", "ip": "1.1.1.1", "app": "ARS", "process": "P",
+            "model": "M", "line": "L", "code": "C", "subcode": "S",
+            "variables": {}, "renderedBody": "<b>y</b>",
+        })
+        assert req.rendered_body == "<b>y</b>"

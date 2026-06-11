@@ -76,8 +76,22 @@ class AppSettings(BaseSettings):
     grafana_base_url: str = "http://grafana:3000"
     grafana_dashboard_uid: str = ""
 
+    # RMS custom email body (Option C). Dark-launch: off by default so the
+    # payload stays the legacy 9 fields until explicitly enabled (D7). The size
+    # guards are conservative backstops for the unknown Redis/ESB body cap (D3).
+    rms_custom_body_enabled: bool = False
+    rms_erb_row_limit: int = 50
+    rms_body_byte_cap: int = 256000
+
     # Scheduler / instance
     scheduler_misfire_grace_time: int = 60
+    # Periodic cadence reconcile: each pod re-derives its owned processes'
+    # scheduling intervals from Mongo every N seconds and applies only the
+    # delta (adds/removes (process,interval) jobs) — so a profile edit that
+    # changes the evaluation cadence takes effect without a pod restart or a
+    # partition reassignment. 0 disables the loop (write-API/admin triggers
+    # still work). See AnalysisScheduler.reconcile.
+    scheduler_reconcile_interval_sec: float = 60.0
     instance_id: str = ""
     local_tz: str = "Asia/Seoul"
 

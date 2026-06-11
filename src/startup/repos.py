@@ -15,9 +15,17 @@ import structlog
 from pymongo import ASCENDING
 from pymongo.errors import OperationFailure
 
-from src.config.constants import COLL_EQP_INFO, COLL_PROFILE
+from src.config.constants import (
+    COLL_EQP_INFO,
+    COLL_PROFILE,
+    COLL_RMS_EMAIL_TEMPLATE,
+)
 from src.config.settings import AppSettings
-from src.db.repository import EqpInfoRepository, ProfileRepository
+from src.db.repository import (
+    EqpInfoRepository,
+    ProfileRepository,
+    RmsEmailTemplateRepository,
+)
 from src.startup.infra import InfraContext
 
 logger = structlog.get_logger(__name__)
@@ -27,6 +35,7 @@ logger = structlog.get_logger(__name__)
 class RepositoryContext:
     profile_repo: ProfileRepository
     eqp_info_repo: EqpInfoRepository
+    template_repo: RmsEmailTemplateRepository
 
 
 async def init_repos(
@@ -95,4 +104,7 @@ async def init_repos(
     return RepositoryContext(
         profile_repo=ProfileRepository(db[COLL_PROFILE]),
         eqp_info_repo=EqpInfoRepository(db[COLL_EQP_INFO]),
+        # Read-only: authored in WebManager. We take the handle but never
+        # create/index/write it (WebManager owns its schema, like EQP_INFO).
+        template_repo=RmsEmailTemplateRepository(db[COLL_RMS_EMAIL_TEMPLATE]),
     )

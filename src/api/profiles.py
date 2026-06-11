@@ -175,13 +175,36 @@ async def _load_overlay(repo: Any, scope: Scope) -> MonitorProfile:
     return overlay
 
 
-async def _commit(repo: Any, overlay: MonitorProfile, expected_version: int) -> dict[str, Any]:
+async def _trigger_reconcile(scheduler: Any) -> None:
+    """Best-effort cadence reconcile after a successful write.
+
+    The write is already persisted to Mongo, so a scheduler hiccup (or a
+    missing scheduler during partial startup / in some test harnesses) must
+    never fail it — the periodic reconcile loop and partition reassignment are
+    the safety net. ``reconcile()`` re-derives this pod's owned-process
+    scheduling intervals and applies only the delta, so it no-ops when the
+    edit did not change the cadence. In a multi-pod deployment only the pod
+    that owns the edited process changes jobs here; others catch up on their
+    next periodic reconcile.
+    """
+    if scheduler is None:
+        return
+    try:
+        await scheduler.reconcile()
+    except Exception as e:  # best-effort — never surface to the writer
+        logger.warning("post_write_reconcile_failed", error=str(e))
+
+
+async def _commit(
+    repo: Any, overlay: MonitorProfile, expected_version: int, scheduler: Any = None
+) -> dict[str, Any]:
     """Validate then optimistic-locked replace; returns the new version."""
     await _validate_composed(repo, overlay)
     try:
         new_version = await repo.replace_with_version(overlay, expected_version)
     except (ProfileVersionConflictError, ProfileNotFoundError, MongoUnavailableError) as e:
         raise _map_repo_error(e) from e
+    await _trigger_reconcile(scheduler)
     return {"scope": overlay.scope.to_mongo(), "version": new_version}
 
 
@@ -242,7 +265,11 @@ def _provenance(docs: list[MonitorProfile]) -> dict[str, dict[str, str]]:
 # Whole-overlay create / replace / delete
 # ----------------------------------------------------------------------
 @router.post("", status_code=201)
-async def create_overlay(body: ProfileCreate, repo: Any = Depends(get_profile_repo)) -> dict[str, Any]:
+async def create_overlay(
+    body: ProfileCreate,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
+) -> dict[str, Any]:
     overlay = MonitorProfile(
         scope=body.scope, enabled=body.enabled, measures=body.measures,
         rules=body.rules, notify=body.notify,
@@ -252,17 +279,22 @@ async def create_overlay(body: ProfileCreate, repo: Any = Depends(get_profile_re
         profile_id = await repo.create(overlay)
     except (ProfileAlreadyExistsError, MongoUnavailableError) as e:
         raise _map_repo_error(e) from e
+    await _trigger_reconcile(scheduler)
     return {"id": profile_id, "scope": overlay.scope.to_mongo(), "version": 1}
 
 
 @router.put("")
-async def replace_overlay(body: ProfileReplace, repo: Any = Depends(get_profile_repo)) -> dict[str, Any]:
+async def replace_overlay(
+    body: ProfileReplace,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
+) -> dict[str, Any]:
     overlay = MonitorProfile(
         scope=body.scope, enabled=body.enabled, measures=body.measures,
         rules=body.rules, notify=body.notify,
         governance=Governance(version=body.expected_version),
     )
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)
 
 
 @router.delete("")
@@ -272,12 +304,14 @@ async def delete_overlay(
     model: str = "*",
     eqpId: str = "*",  # noqa: N803
     repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     scope = Scope(process=process, eqp_model=model, eqp_id=eqpId)
     try:
         await repo.delete_by_scope(scope, expected_version=version)
     except (ProfileVersionConflictError, ProfileNotFoundError, MongoUnavailableError) as e:
         raise _map_repo_error(e) from e
+    await _trigger_reconcile(scheduler)
     return {"deleted": scope.to_mongo()}
 
 
@@ -285,17 +319,24 @@ async def delete_overlay(
 # Item-level CRUD (read-modify-write the overlay, validate, version-locked)
 # ----------------------------------------------------------------------
 @router.post("/measures")
-async def add_measure(body: MeasureWrite, repo: Any = Depends(get_profile_repo)) -> dict[str, Any]:
+async def add_measure(
+    body: MeasureWrite,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
+) -> dict[str, Any]:
     overlay = await _load_overlay(repo, body.scope)
     if any(m.id == body.measure.id for m in overlay.measures):
         raise HTTPException(status_code=409, detail=f"measure '{body.measure.id}' already exists")
     overlay.measures.append(body.measure)
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)
 
 
 @router.patch("/measures/{measure_id}")
 async def update_measure(
-    measure_id: str, body: MeasureWrite, repo: Any = Depends(get_profile_repo)
+    measure_id: str,
+    body: MeasureWrite,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     if body.measure.id != measure_id:
         raise HTTPException(
@@ -307,7 +348,7 @@ async def update_measure(
     if idx is None:
         raise HTTPException(status_code=404, detail=f"measure '{measure_id}' not found")
     overlay.measures[idx] = body.measure
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)
 
 
 @router.delete("/measures/{measure_id}")
@@ -318,6 +359,7 @@ async def delete_measure(
     model: str = "*",
     eqpId: str = "*",  # noqa: N803
     repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     scope = Scope(process=process, eqp_model=model, eqp_id=eqpId)
     overlay = await _load_overlay(repo, scope)
@@ -325,21 +367,28 @@ async def delete_measure(
     if len(kept) == len(overlay.measures):
         raise HTTPException(status_code=404, detail=f"measure '{measure_id}' not found")
     overlay.measures = kept
-    return await _commit(repo, overlay, version)
+    return await _commit(repo, overlay, version, scheduler)
 
 
 @router.post("/rules")
-async def add_rule(body: RuleWrite, repo: Any = Depends(get_profile_repo)) -> dict[str, Any]:
+async def add_rule(
+    body: RuleWrite,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
+) -> dict[str, Any]:
     overlay = await _load_overlay(repo, body.scope)
     if any(r.id == body.rule.id for r in overlay.rules):
         raise HTTPException(status_code=409, detail=f"rule '{body.rule.id}' already exists")
     overlay.rules.append(body.rule)
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)
 
 
 @router.patch("/rules/{rule_id}")
 async def update_rule(
-    rule_id: str, body: RuleWrite, repo: Any = Depends(get_profile_repo)
+    rule_id: str,
+    body: RuleWrite,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     if body.rule.id != rule_id:
         raise HTTPException(
@@ -351,7 +400,7 @@ async def update_rule(
     if idx is None:
         raise HTTPException(status_code=404, detail=f"rule '{rule_id}' not found")
     overlay.rules[idx] = body.rule
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)
 
 
 @router.delete("/rules/{rule_id}")
@@ -362,6 +411,7 @@ async def delete_rule(
     model: str = "*",
     eqpId: str = "*",  # noqa: N803
     repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     scope = Scope(process=process, eqp_model=model, eqp_id=eqpId)
     overlay = await _load_overlay(repo, scope)
@@ -369,13 +419,16 @@ async def delete_rule(
     if len(kept) == len(overlay.rules):
         raise HTTPException(status_code=404, detail=f"rule '{rule_id}' not found")
     overlay.rules = kept
-    return await _commit(repo, overlay, version)
+    return await _commit(repo, overlay, version, scheduler)
 
 
 @router.patch("/notify/{name}")
 async def patch_notify(
-    name: str, body: NotifyWrite, repo: Any = Depends(get_profile_repo)
+    name: str,
+    body: NotifyWrite,
+    repo: Any = Depends(get_profile_repo),
+    scheduler: Any = Depends(deps.get_scheduler_optional),
 ) -> dict[str, Any]:
     overlay = await _load_overlay(repo, body.scope)
     overlay.notify[name] = body.channel
-    return await _commit(repo, overlay, body.expected_version)
+    return await _commit(repo, overlay, body.expected_version, scheduler)

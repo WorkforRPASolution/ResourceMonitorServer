@@ -161,6 +161,7 @@ GroupByKey = Literal["eqpId", "proc"]
 ExpandMode = Literal["scalar", "instance"]
 MetricKind = Literal["gauge", "counter", "cumulative"]
 Quantifier = Literal["any", "all", "count"]
+GroupBy = Literal["eqp", "model", "process"]
 
 _WILDCARD_CHARS = ("*", "?", "[")
 
@@ -322,13 +323,29 @@ class Rule(BaseModel):
 
 
 class NotifyChannel(BaseModel):
-    """How to deliver — referenced by rules by name."""
+    """How to deliver — referenced by rules by name.
+
+    ``group_by`` controls the email send unit (SCHEMA.md §1.5). Default
+    ``"eqp"`` keeps the current per-equipment fan-out. ``"model"``/``"process"``
+    collapse all equipment breaching under the same (group, proc, severity)
+    into ONE email addressed via a representative equipment's emailCategory —
+    the engine lists the affected equipment in the alert variables. The
+    optional ``representatives`` map pins the representative eqpId per group
+    value (e.g. ``{"MODEL_A": "EQP001"}``); when absent the engine picks the
+    smallest breaching eqpId deterministically.
+
+    Routing caveat: recipients come from the representative's emailCategory, so
+    ``"process"`` grouping across multiple models notifies only the
+    representative's category (see SCHEMA.md §1.5).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     cooldown_minutes: int
     email_code: str = "RESOURCE_MONITOR"
     email_subcode: str | None = None
+    group_by: GroupBy = "eqp"
+    representatives: dict[str, str] = Field(default_factory=dict)
 
 
 class Governance(BaseModel):

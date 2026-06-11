@@ -78,3 +78,13 @@ def get_cooldown_manager(request: Request) -> Any:
 
 def get_scheduler(request: Request) -> Any:
     return _state(request, "scheduler")
+
+
+def get_scheduler_optional(request: Request) -> Any | None:
+    """Optional variant — returns None if the scheduler is not on app.state.
+
+    Used by the profile write API to fire a best-effort cadence reconcile
+    after a write: a missing scheduler (partial startup, some test harnesses)
+    must never fail the write — the periodic reconcile loop is the safety net.
+    """
+    return _state_optional(request, "scheduler")
