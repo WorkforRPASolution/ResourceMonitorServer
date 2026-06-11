@@ -85,6 +85,13 @@ class AppSettings(BaseSettings):
 
     # Scheduler / instance
     scheduler_misfire_grace_time: int = 60
+    # Periodic cadence reconcile: each pod re-derives its owned processes'
+    # scheduling intervals from Mongo every N seconds and applies only the
+    # delta (adds/removes (process,interval) jobs) — so a profile edit that
+    # changes the evaluation cadence takes effect without a pod restart or a
+    # partition reassignment. 0 disables the loop (write-API/admin triggers
+    # still work). See AnalysisScheduler.reconcile.
+    scheduler_reconcile_interval_sec: float = 60.0
     instance_id: str = ""
     local_tz: str = "Asia/Seoul"
 

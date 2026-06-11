@@ -812,3 +812,57 @@ async def test_template_miss_builtin(
     assert "임계 초과" in body  # 내장 기본 본문 시그니처
     assert eqp_id in body  # ERB 가 장비 행을 채움
     assert payload["title"] == "[EARS] 자원 모니터링 알림"  # 내장 기본 제목(콜론 없음)
+
+
+# ======================================================================
+# Cadence reconcile — 실 Mongo의 get_scheduling_intervals ↔ reconcile() 델타.
+# 단위 테스트는 scheduler(프로파일 측)·repo(스케줄러 측)를 각각 목으로 둬서
+# 이 한 구간(실 Mongo 조회 → 델타 적용)만 통합으로 검증한다.
+# ======================================================================
+async def test_reconcile_picks_up_new_cadence_from_real_mongo(phase1_db):
+    """프로파일에 '새 평가주기' 룰을 추가하면 reconcile()이 실 Mongo에서
+    interval 집합을 재계산해 해당 (process,interval) job만 추가한다(remove_all
+    재구성 없이). 주기 미변경 시에는 no-op."""
+    from unittest.mock import MagicMock
+
+    from src.scheduler.jobs import AnalysisScheduler
+
+    process = "RECON-E2E"
+    repo = ProfileRepository(phase1_db["RESOURCE_MONITOR_PROFILE"])
+    await repo.upsert(_cpu_profile(process, rules=[
+        Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+             when=[Condition(fact="cpu.max", op=">=", value=80)]),
+    ]))
+
+    deps = SimpleNamespace(
+        es=MagicMock(), profile_repo=repo, eqp_info_repo=MagicMock(),
+        zk_lock=MagicMock(), cooldown_mgr=MagicMock(),
+        email_client=MagicMock(), query_builder=MagicMock(),
+    )
+    settings = AppSettings(
+        scheduler_misfire_grace_time=60, scheduler_reconcile_interval_sec=0,
+    )
+    sched = AnalysisScheduler(settings, deps)
+    await sched.start()
+    try:
+        # 초기 ownership + job 등록(실 Mongo의 get_scheduling_intervals 경유)
+        await sched.reload([process])
+        assert {j.id for j in sched._scheduler.get_jobs()} == {f"analysis-{process}-5m"}
+
+        # 운영자가 새 주기(7분) 룰 추가 → 프로파일 전체 교체 upsert
+        await repo.upsert(_cpu_profile(process, rules=[
+            Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=80)]),
+            Rule(id="cpu_slow", interval_minutes=7, severity="WARNING",
+                 when=[Condition(fact="cpu.max", op=">=", value=70)]),
+        ]))
+
+        changed = await sched.reconcile()
+        assert changed is True
+        assert {j.id for j in sched._scheduler.get_jobs()} == {
+            f"analysis-{process}-5m", f"analysis-{process}-7m",
+        }
+        # 두 번째 reconcile은 주기 변동 없음 → no-op
+        assert await sched.reconcile() is False
+    finally:
+        await sched.shutdown(timeout=1.0)

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from src.api import deps
+from src.db.models import MongoUnavailableError
 
 router = APIRouter(prefix="/admin")
 
@@ -103,9 +104,21 @@ async def clear_cooldown(
 async def reload_scheduler(
     scheduler: Any = Depends(deps.get_scheduler),
 ) -> dict[str, bool]:
-    """Force the scheduler to rebuild its job list (e.g. after editing a profile)."""
-    await scheduler.reload()
-    return {"reloaded": True}
+    """Force an immediate cadence reconcile for this pod's owned processes
+    (e.g. after editing a profile's evaluation interval).
+
+    This drives ``scheduler.reconcile()`` — which re-derives the owned
+    processes' scheduling intervals from Mongo and applies only the delta —
+    rather than the legacy ``reload()`` with no args, which was a no-op in
+    normal (non-debug) mode. ``reconciled`` is True iff a job was added or
+    removed (False when the cadence was already up to date)."""
+    try:
+        changed = await scheduler.reconcile()
+    except MongoUnavailableError as e:
+        # Mirror the profile write API: a transient DB outage is 503 (retryable),
+        # not a 500 that reads like a server bug.
+        raise HTTPException(status_code=503, detail="database unavailable") from e
+    return {"reconciled": bool(changed)}
 
 
 @router.get("/email-outbox")

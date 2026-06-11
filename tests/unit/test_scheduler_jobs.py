@@ -347,3 +347,273 @@ class TestSchedulerReload:
         assert "analysis-PVD-5m" in job_ids
         assert "analysis-PVD-10m" in job_ids
         await sched.shutdown(timeout=1.0)
+
+
+# ----------------------------------------------------------------------
+# Cadence reconcile — pick up profile cadence changes WITHOUT a full
+# remove_all_jobs rebuild. reconcile() re-derives the owned processes'
+# scheduling intervals and applies only the delta; unchanged jobs keep
+# their next_run_time. This is what makes a profile edit's new evaluation
+# cadence take effect without a pod restart / partition reassignment.
+# ----------------------------------------------------------------------
+@pytest.mark.unit
+class TestSchedulerReconcile:
+    def _make_deps(self, intervals):
+        deps = SimpleNamespace(
+            es=MagicMock(),
+            profile_repo=MagicMock(
+                get_scheduling_intervals=AsyncMock(return_value=list(intervals)),
+            ),
+            eqp_info_repo=MagicMock(),
+            zk_lock=MagicMock(),
+            cooldown_mgr=MagicMock(),
+            email_client=MagicMock(),
+            query_builder=MagicMock(),
+        )
+        return deps
+
+    def _settings(self, **kw):
+        # reconcile loop disabled (0) so these tests drive reconcile() directly
+        kw.setdefault("scheduler_misfire_grace_time", 60)
+        kw.setdefault("scheduler_reconcile_interval_sec", 0)
+        return AppSettings(**kw)
+
+    async def test_reconcile_noop_when_cadence_unchanged(self):
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        before = {j.id: j.next_run_time for j in sched._scheduler.get_jobs()}
+
+        changed = await sched.reconcile()
+
+        assert changed is False
+        after = {j.id: j.next_run_time for j in sched._scheduler.get_jobs()}
+        assert after.keys() == before.keys()
+        # unchanged jobs must NOT be recreated (next_run preserved)
+        assert after == before
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_adds_new_interval_without_touching_existing(self):
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        nrt_5m_before = {
+            j.id: j.next_run_time
+            for j in sched._scheduler.get_jobs()
+            if j.id == "analysis-CVD-5m"
+        }
+        # operator added a rule at a brand-new cadence
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(
+            return_value=[5, 10, 15]
+        )
+
+        changed = await sched.reconcile()
+
+        assert changed is True
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert job_ids == {"analysis-CVD-5m", "analysis-CVD-10m", "analysis-CVD-15m"}
+        # the pre-existing 5m job must be the SAME job (not rebuilt)
+        nrt_5m_after = {
+            j.id: j.next_run_time
+            for j in sched._scheduler.get_jobs()
+            if j.id == "analysis-CVD-5m"
+        }
+        assert nrt_5m_after == nrt_5m_before
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_removes_dropped_interval(self):
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[5])
+
+        changed = await sched.reconcile()
+
+        assert changed is True
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert job_ids == {"analysis-CVD-5m"}
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_noop_when_not_yet_assigned_normal_mode(self):
+        # normal mode, reload() never called → no owned processes → no-op,
+        # and Mongo must NOT be queried.
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(debug_read_only=False), deps)
+        await sched.start()
+
+        changed = await sched.reconcile()
+
+        assert changed is False
+        assert sched._scheduler.get_jobs() == []
+        deps.profile_repo.get_scheduling_intervals.assert_not_awaited()
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_resolves_debug_processes_when_unassigned(self):
+        # debug mode, no reload yet → reconcile falls back to debug processes
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(
+            self._settings(debug_read_only=True, debug_processes=["PVD"]), deps
+        )
+        await sched.start()
+
+        changed = await sched.reconcile()
+
+        assert changed is True
+        job_ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert job_ids == {"analysis-PVD-5m", "analysis-PVD-10m"}
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_drops_jobs_for_no_longer_owned_process(self):
+        # owned set shrinks (e.g. all rules disabled) → its jobs are removed
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[])
+
+        changed = await sched.reconcile()
+
+        assert changed is True
+        assert sched._scheduler.get_jobs() == []
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_noop_when_paused(self):
+        # quiescence contract: a paused scheduler (ZK SUSPENDED/LOST) must not
+        # have its job set mutated by a write/admin-triggered reconcile.
+        deps = self._make_deps([5, 10])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        before = {j.id for j in sched._scheduler.get_jobs()}
+        # a cadence change is pending, but we're paused → must be ignored
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[5, 10, 15])
+        await sched.pause_all_jobs()
+
+        changed = await sched.reconcile()
+
+        assert changed is False
+        assert {j.id for j in sched._scheduler.get_jobs()} == before
+        deps.profile_repo.get_scheduling_intervals.assert_not_awaited()
+        await sched.shutdown(timeout=1.0)
+
+    async def test_reconcile_noop_after_shutdown(self):
+        # a late write-trigger reconcile arriving after shutdown must not
+        # re-add jobs to a torn-down scheduler.
+        deps = self._make_deps([5])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+        await sched.shutdown(timeout=1.0)
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(return_value=[5, 10])
+
+        changed = await sched.reconcile()
+
+        assert changed is False
+        deps.profile_repo.get_scheduling_intervals.assert_not_awaited()
+
+    async def test_reconcile_and_reload_are_serialized(self):
+        # reconcile() and reload() must be mutually exclusive: a reconcile
+        # in-flight (holding the lock) blocks a concurrent partition reload
+        # until it finishes, so reload's remove_all_jobs can't interleave with
+        # reconcile's snapshot→apply. Final state reflects the owner only.
+        deps = self._make_deps([5])
+        sched = AnalysisScheduler(self._settings(), deps)
+        await sched.start()
+        await sched.reload(["CVD"])
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocking_intervals(process):
+            entered.set()
+            await release.wait()
+            return [5]
+
+        deps.profile_repo.get_scheduling_intervals = AsyncMock(
+            side_effect=blocking_intervals
+        )
+
+        recon_task = asyncio.create_task(sched.reconcile())
+        await entered.wait()  # reconcile now holds the lock, blocked on Mongo
+        reload_task = asyncio.create_task(sched.reload(["PVD"]))
+        await asyncio.sleep(0.02)
+        # reload must be blocked on the lock — it has NOT run remove_all_jobs yet
+        assert {j.id for j in sched._scheduler.get_jobs()} == {"analysis-CVD-5m"}
+
+        release.set()
+        await recon_task
+        await reload_task
+        # reload won: only the owner's job remains, no stale un-owned job
+        assert {j.id for j in sched._scheduler.get_jobs()} == {"analysis-PVD-5m"}
+        await sched.shutdown(timeout=1.0)
+
+
+@pytest.mark.unit
+class TestReconcileLoop:
+    def _make_sched(self, interval_sec):
+        deps = MagicMock()
+        settings = AppSettings(
+            scheduler_misfire_grace_time=60,
+            scheduler_reconcile_interval_sec=interval_sec,
+        )
+        return AnalysisScheduler(settings, deps)
+
+    async def test_loop_calls_reconcile_periodically_and_shutdown_cancels(self):
+        sched = self._make_sched(0.01)
+        sched.reconcile = AsyncMock(return_value=False)
+        await sched.start()
+        await asyncio.sleep(0.06)
+        assert sched.reconcile.await_count >= 2
+        await sched.shutdown(timeout=1.0)
+        # task is cancelled/cleared on shutdown
+        assert sched._reconcile_task is None
+        count_at_shutdown = sched.reconcile.await_count
+        await asyncio.sleep(0.03)
+        assert sched.reconcile.await_count == count_at_shutdown  # stopped
+
+    async def test_loop_survives_reconcile_exception(self):
+        sched = self._make_sched(0.01)
+        calls = {"n": 0}
+
+        async def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient mongo blip")
+            return False
+
+        sched.reconcile = flaky
+        await sched.start()
+        await asyncio.sleep(0.06)
+        await sched.shutdown(timeout=1.0)
+        # kept ticking after the first call raised
+        assert calls["n"] >= 2
+
+    async def test_loop_disabled_when_interval_zero(self):
+        sched = self._make_sched(0)
+        sched.reconcile = AsyncMock(return_value=False)
+        await sched.start()
+        await asyncio.sleep(0.04)
+        assert sched._reconcile_task is None
+        sched.reconcile.assert_not_awaited()
+        await sched.shutdown(timeout=1.0)
+
+    async def test_loop_not_started_in_debug_mode(self):
+        # debug_read_only preserves the "manual observer" contract: the periodic
+        # loop does NOT auto-start analysis jobs (operator triggers via admin /
+        # the write path). reconcile() itself still works when called directly.
+        settings = AppSettings(
+            scheduler_misfire_grace_time=60,
+            scheduler_reconcile_interval_sec=0.01,
+            debug_read_only=True,
+            debug_processes=["X"],
+        )
+        sched = AnalysisScheduler(settings, MagicMock())
+        sched.reconcile = AsyncMock(return_value=False)
+        await sched.start()
+        await asyncio.sleep(0.04)
+        assert sched._reconcile_task is None
+        sched.reconcile.assert_not_awaited()
+        await sched.shutdown(timeout=1.0)
