@@ -201,7 +201,7 @@ SEVERITY: WARNING, CRITICAL  (rule이 소유)
 핵심 규칙:
 - **1 measure 항목 = 1 fact = 1 type.** `type` 이름이 곧 fact 이름(`max`/`min`/`avg`/`last`/`p50`·`p90`·`p95`·`p99`/`spike_count`/`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`). 한 measure 내 type 유일. type 카탈로그는 닫힌 enum(`src/analyzer/fact_catalog.py`). Phase 1(`max`~`spike_count`)은 엔진 평가, Phase 2/3은 스키마 수용·엔진 skip.
 - **경보 방향**은 rule의 op로 표현(높을때 `>=`, 낮을때 `<=`, 범위이탈 두 조건 OR, 상태 `==`). `state_check`은 별도 type 없이 `min`/`max`로 흡수.
-- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay), 문서 `enabled`는 AND fold. 구체 scope에서 같은 `rule.id`를 `enabled:false`로 덮으면 그 scope에서만 rule이 꺼진다(소프트 tombstone — 상속 항목 완전 삭제는 추후). [SCHEMA.md §6](SCHEMA.md).
+- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay). 문서 `enabled`도 같은 규칙 — **구체 문서의 값이 이김**(조상이 `false`여도 overlay가 `true`면 그 scope는 켜짐. 광역 off는 overlay 없는 장비만 끈다). 구체 scope에서 같은 `rule.id`를 `enabled:false`로 덮으면 그 scope에서만 rule이 꺼진다(소프트 tombstone — 상속 항목 완전 삭제는 추후). [SCHEMA.md §6](SCHEMA.md).
 
 ### v2 평가 흐름 (as-built)
 

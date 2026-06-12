@@ -232,10 +232,25 @@ class TestCascadeFold:
         warn = next(r for r in eff.rules if r.id == "cpu_warn")
         assert warn.when[0].value == 70  # overlay won whole-object
 
-    def test_enabled_folds_with_and(self):
-        a = MonitorProfile(scope=Scope(process="*"), enabled=True)
-        b = MonitorProfile(scope=Scope(process="P"), enabled=False)
-        assert fold_profiles([a, b], b.scope).enabled is False
+    def test_enabled_most_specific_wins(self):
+        """``enabled`` follows the same cascade rule as every other field:
+        the most-specific document's value wins (no AND kill-switch).
+        회귀(2026-06-12 사고): 전역 off + eqp overlay on → effective는 켜져야 한다."""
+        root_on = MonitorProfile(scope=Scope(process="*"), enabled=True)
+        proc_off = MonitorProfile(scope=Scope(process="P"), enabled=False)
+        eqp_on = MonitorProfile(
+            scope=Scope(process="P", eqp_model="M", eqp_id="E1"), enabled=True
+        )
+        root_off = MonitorProfile(scope=Scope(process="*"), enabled=False)
+
+        # 구체 scope의 off는 그대로 끈다 (기존 동작 유지)
+        assert fold_profiles([root_on, proc_off], proc_off.scope).enabled is False
+        # 사고 케이스: 꺼진 조상 밑에서도 구체 scope의 on이 이긴다
+        assert fold_profiles([root_off, eqp_on], eqp_on.scope).enabled is True
+        # 3단 케이스: 가장 구체적인 값이 이긴다
+        assert fold_profiles([root_on, proc_off, eqp_on], eqp_on.scope).enabled is True
+        # 단일 문서는 자기 값 그대로
+        assert fold_profiles([root_off], root_off.scope).enabled is False
 
     def test_overlay_disables_inherited_rule(self):
         """Soft tombstone: an overlay re-declaring a rule id with enabled=False

@@ -79,15 +79,27 @@ class AnalysisEngine:
         # 2. resolve the effective profile per equipment; bucket by signature so
         #    equipment sharing a profile is analysed with one query set.
         buckets: dict[str, dict[str, Any]] = {}
+        skipped_disabled = 0
         for doc in equipment:
             profile = await self._deps.profile_repo.resolve_profile(
                 process, doc.get("eqpModel", "*"), doc["eqpId"]
             )
-            if profile is None or not profile.enabled:
+            if profile is None:  # no scope doc matches at all — not "disabled"
+                continue
+            if not profile.enabled:
+                skipped_disabled += 1
                 continue
             sig = profile.effective_signature()
             bucket = buckets.setdefault(sig, {"profile": profile, "eqp_ids": []})
             bucket["eqp_ids"].append(doc["eqpId"])
+        # Disabled skips must not be silent (2026-06-12 incident: mail stopped
+        # with zero trace). One aggregate line per tick — never per-eqp (20K).
+        if skipped_disabled:
+            logger.info(
+                "equipment_skipped_disabled",
+                process=process,
+                count=skipped_disabled,
+            )
 
         # 3. evaluate each bucket
         pending: list[_Pending] = []

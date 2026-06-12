@@ -462,8 +462,11 @@ def fold_profiles(ordered: list[MonitorProfile], target_scope: Scope) -> Monitor
     ``ordered`` must be sorted base→specific, e.g. ``[(*,*,*), (p,*,*), (p,m,*),
     (p,m,e)]``. Merge is by key — ``measures`` by ``measure.id``, ``rules`` by
     ``rule.id``, ``notify`` by channel name — and the more-specific object
-    replaces the whole entry (no field-level partial merge). ``enabled`` folds
-    with AND: any disabled level disables the effective profile.
+    replaces the whole entry (no field-level partial merge). ``enabled``
+    follows the same rule: the most-specific document's value wins, so an
+    enabled overlay keeps running under a disabled ancestor (and vice versa).
+    A broad-scope ``enabled:false`` therefore only silences equipment that has
+    no more-specific document of its own.
     """
     measures: dict[str, Measure] = {}
     rules: dict[str, Rule] = {}
@@ -471,7 +474,7 @@ def fold_profiles(ordered: list[MonitorProfile], target_scope: Scope) -> Monitor
     enabled = True
     governance = Governance()
     for prof in ordered:
-        enabled = enabled and prof.enabled
+        enabled = prof.enabled  # most-specific wins (loop runs base→specific)
         for m in prof.measures:
             measures[m.id] = m
         for r in prof.rules:

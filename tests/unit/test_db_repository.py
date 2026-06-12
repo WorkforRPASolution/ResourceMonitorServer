@@ -145,6 +145,24 @@ class TestCascadeFold:
         repo = ProfileRepository(mock_collection)
         assert await repo.resolve_profile("X", "Y", "Z") is None
 
+    async def test_disabled_global_enabled_eqp_overlay_wins(self, mock_collection):
+        """회귀(2026-06-12 사고): 전역 (*,*,*)이 enabled:false 여도 eqp overlay가
+        enabled:true 면 effective는 켜진다 — enabled도 구체 scope가 이긴다."""
+        glob = _make_profile(process="*")
+        glob.enabled = False
+        overlay = MonitorProfile(
+            scope=Scope(process="CVD", eqp_model="M", eqp_id="E1"),
+            enabled=True,
+            rules=[Rule(id="cpu_crit", interval_minutes=5, severity="CRITICAL",
+                        when=[Condition(fact="cpu.max", op=">=", value=95)])],
+        )
+        mock_collection.find = MagicMock(return_value=_cursor([_doc(glob), _doc(overlay)]))
+        repo = ProfileRepository(mock_collection)
+        eff = await repo.resolve_profile("CVD", "M", "E1")
+        assert eff.enabled is True
+        # 상속/오버라이드는 그대로: rule 둘 다, measure는 전역 것
+        assert {r.id for r in eff.rules} == {"cpu_warn", "cpu_crit"}
+
     async def test_caches_effective(self, mock_collection):
         mock_collection.find = MagicMock(return_value=_cursor([_doc(_make_profile(process="*"))]))
         repo = ProfileRepository(mock_collection)
@@ -171,14 +189,16 @@ class TestGetSchedulingIntervals:
     """reload()의 잡 cadence 출처. resolve_profile(p,*,*)와 달리 model/eqp 단독
     overlay까지 포함해 잡이 등록되도록 보장한다."""
 
-    async def test_filter_includes_globals_and_only_enabled(self, mock_collection):
+    async def test_filter_includes_globals_without_doc_enabled_filter(self, mock_collection):
         mock_collection.find = MagicMock(return_value=_cursor([]))
         repo = ProfileRepository(mock_collection)
         await repo.get_scheduling_intervals("CVD")
-        # 글로벌(*)까지 $in 으로 포함, enabled=true 만 대상
+        # 글로벌(*)까지 $in 으로 포함. doc 레벨 enabled는 필터하지 않는다 —
+        # enabled는 구체 scope가 이기므로(last-wins), 꺼진 조상 doc의 rule을
+        # 켜진 overlay가 상속해 쓸 수 있다. 그 rule의 interval은 조상 doc에만
+        # 있으므로 모든 doc에서 수집해야 한다(아니면 silent lost breach).
         assert mock_collection.find.call_args.args[0] == {
             "scope.process": {"$in": ["CVD", "*"]},
-            "enabled": True,
         }
 
     async def test_unions_intervals_across_scopes(self, mock_collection):

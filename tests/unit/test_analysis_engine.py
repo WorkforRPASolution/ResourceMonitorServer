@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from src.analyzer.engine import AnalysisEngine
 from src.config.settings import AppSettings
@@ -161,6 +162,25 @@ class TestEdgeCases:
         result = await _engine(deps).run_analysis("CVD", 5)
         assert result.breaches == []
         deps.es.client.search.assert_not_awaited()
+
+    async def test_disabled_profile_skip_logs_aggregate(self):
+        """disabled 스킵은 조용히 죽지 않는다(2026-06-12 사고 재발 방지) —
+        process당 1줄 집계 로그. profile=None(문서 없음)은 집계에 안 들어간다."""
+        prof = _cpu_profile()
+        prof.enabled = False
+        deps = _make_deps(prof, equipment=[_EQP01, _EQP02])
+        with structlog.testing.capture_logs() as cap:
+            await _engine(deps).run_analysis("CVD", 5)
+        events = [e for e in cap if e["event"] == "equipment_skipped_disabled"]
+        assert len(events) == 1  # per-eqp 로그 금지 — 집계 1줄
+        assert events[0]["process"] == "CVD"
+        assert events[0]["count"] == 2
+
+        # 문서가 아예 없는 장비(resolve→None)는 disabled 집계가 아니다
+        deps_none = _make_deps(None)
+        with structlog.testing.capture_logs() as cap2:
+            await _engine(deps_none).run_analysis("CVD", 5)
+        assert not [e for e in cap2 if e["event"] == "equipment_skipped_disabled"]
 
     async def test_disabled_rule_skipped(self):
         # the only rule at this interval is disabled → no evaluation, no email,

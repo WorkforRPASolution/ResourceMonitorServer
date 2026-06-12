@@ -311,6 +311,50 @@ async def test_disabled_rule_does_not_fire(real_es, phase1_db, real_redis, ns, m
 
 
 # ======================================================================
+# E3c — ★ 회귀(2026-06-12 사고): 전역 doc enabled:false + eqp overlay
+#        enabled:true → 그 장비는 평가·발송된다 (enabled도 구체 scope가 이김)
+# ======================================================================
+async def test_global_disabled_eqp_overlay_still_alerts(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process, eqp_id = "E2E_ENOVR", "E2E-ENOVR-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    # 전역 (*,*,*): measure/rule/notify 보유, doc 자체는 꺼짐 (사고 당시 상태)
+    glob = MonitorProfile(
+        scope=Scope(process="*"),
+        enabled=False,
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[Rule(id="cpu_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=95)])],
+        notify={"default": NotifyChannel(cooldown_minutes=30)},
+    )
+    await _seed_profile(phase1_db, glob)
+    # eqp overlay: 켜져 있고, 같은 rule id로 임계만 낮춰 오버라이드 (사고와 동일 구조)
+    overlay = MonitorProfile(
+        scope=Scope(process=process, eqp_model="MODEL-E2E", eqp_id=eqp_id),
+        enabled=True,
+        rules=[Rule(id="cpu_warn", interval_minutes=_INTERVAL, severity="WARNING",
+                    when=[Condition(fact="cpu.max", op=">=", value=80)])],
+    )
+    await _seed_profile(phase1_db, overlay)
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    # 92 ≥ 80(overlay 임계) → breach + 메일 1통. 옛 AND fold였다면 0통이었다.
+    assert len(result.breaches) == 1
+    assert result.breaches[0].eqp_id == eqp_id
+    (payload,) = mock_email_server["received"]
+    assert payload["hostname"] == eqp_id
+
+
+# ======================================================================
 # E4 — cooldown 억제 + 5-dim 키 (실 Redis)
 # ======================================================================
 async def test_cooldown_suppresses_second_alert(real_es, phase1_db, real_redis, ns, mock_email_server):

@@ -202,7 +202,7 @@ class ProfileRepository:
         """Return the cascade-folded **effective** profile for an equipment.
 
         Collects all matching scope documents, folds them base→specific (narrower
-        wins whole-object; ``enabled`` AND-folded), validates reference integrity
+        wins whole-object — ``enabled`` included), validates reference integrity
         on the result (logged, not raised — analysis must survive a bad overlay),
         and caches the effective profile under the bucket key. Returns ``None``
         when no scope document matches at all.
@@ -251,15 +251,19 @@ class ProfileRepository:
         per-equipment effective profile at run time, so thresholds/overrides
         still apply correctly; this method only decides the job cadence.
 
-        Only ``enabled: true`` docs contribute (a fully-disabled profile gets
-        no job), and within a doc only ``enabled`` rules count (a disabled rule
-        needs no job — the engine skips it anyway). Rules predating the
-        ``enabled`` field are treated as enabled. The runtime engine still
-        re-checks ``profile.enabled`` and each ``rule.enabled`` per equipment.
+        Doc-level ``enabled`` is deliberately NOT filtered: ``enabled`` folds
+        most-specific-wins, so an enabled overlay can inherit rules that live
+        only in a disabled ancestor doc — dropping that doc here would drop its
+        intervals and silently lose breaches. A fully-disabled subtree still
+        gets jobs; the engine skips its equipment per tick (cheap no-op).
+        Within a doc only ``enabled`` rules count (a disabled rule needs no
+        job — the engine skips it anyway); rules predating the ``enabled``
+        field are treated as enabled. The runtime engine still re-checks
+        ``profile.enabled`` and each ``rule.enabled`` per equipment.
         """
         try:
             cursor = self._collection.find(
-                {"scope.process": {"$in": [process, "*"]}, "enabled": True},
+                {"scope.process": {"$in": [process, "*"]}},
                 {"_id": 0, "rules.interval_minutes": 1, "rules.enabled": 1},
             )
             docs = await cursor.to_list(None)

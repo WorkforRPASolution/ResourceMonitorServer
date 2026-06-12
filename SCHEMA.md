@@ -288,9 +288,10 @@ base에 overlay를 차례로 덮습니다. `uniq_scope` 덕에 각 레벨 최대
 | `measures` | `measure.id` | 구체 문서의 measure가 **통째로 교체** |
 | `rules` | `rule.id` | 구체 문서의 rule이 **통째로 교체** |
 | `notify` | 맵 이름 | 구체 문서의 채널이 **통째로 교체** |
-| `enabled` | — | 한 레벨이라도 `false`면 비활성 (AND, 안전측 실패) |
+| `enabled` | — | 구체 문서의 값이 **통째로 이김** (다른 필드와 동일) |
 
 - 같은 key가 양쪽에 있으면 **구체 문서의 객체가 통째로 이김**(필드 단위 부분 병합 금지 — 결정적·예측가능). 구체 문서에만 있는 key는 추가.
+- **`enabled`도 같은 규칙**: 조상 문서가 `false`여도 더 구체적인 문서가 `true`면 그 scope는 켜집니다(반대도 동일). ⚠️ 따라서 광역 scope의 `enabled:false`는 **자기 overlay 문서가 없는 장비만** 끕니다 — overlay가 있는 장비는 그 문서의 `enabled`(기본 `true`)가 우선이므로, 그 장비까지 끄려면 해당 overlay도 `enabled:false`로 바꿔야 합니다.
 - "임계 하나만 바꾸기" = 그 **rule 하나만** overlay에 다시 적음(작음). 나머지 measures/rules/notify는 전부 상속 → 전역 변경이 자동 전파.
 - 출처 추적(provenance)·effective-profile 조회 API는 **구현 완료**(`GET /profiles/effective?withProvenance=1` — 각 항목에 기여 scope 라벨).
 - **rule 개별 비활성(소프트 tombstone)은 구현 완료**: overlay에서 같은 `rule.id`를 `enabled:false`로 다시 적으면 통째 교체 규칙에 따라 그 scope에서만 rule이 꺼집니다(전역은 유지). 상속 항목을 목록에서 **완전히 제거**하는 tombstone은 여전히 추후 — 지금은 `enabled:false` 뮤트가 그 역할을 대신합니다.
@@ -332,7 +333,6 @@ db.RESOURCE_MONITOR_PROFILE.createIndex(
   { "scope.process": 1, "scope.eqpModel": 1, "scope.eqpId": 1 },
   { unique: true, name: "uniq_scope" }
 )
-db.RESOURCE_MONITOR_PROFILE.createIndex({ "enabled": 1 })
 ```
 
 - 한 프로파일 = 정확히 한 `(process, eqpModel, eqpId)` 조합. `create()`의 `DuplicateKeyError → ProfileAlreadyExistsError` 변환이 이 불변조건에 의존.
