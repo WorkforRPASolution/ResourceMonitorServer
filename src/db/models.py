@@ -328,15 +328,19 @@ class NotifyChannel(BaseModel):
     ``group_by`` controls the email send unit (SCHEMA.md §1.5). Default
     ``"eqp"`` keeps the current per-equipment fan-out. ``"model"``/``"process"``
     collapse all equipment breaching under the same (group, proc, severity)
-    into ONE email addressed via a representative equipment's emailCategory —
-    the engine lists the affected equipment in the alert variables. The
-    optional ``representatives`` map pins the representative eqpId per group
-    value (e.g. ``{"MODEL_A": "EQP001"}``); when absent the engine picks the
-    smallest breaching eqpId deterministically.
+    into ONE email; the engine lists the affected equipment in the alert
+    variables and uses the group value as the title headline (``displayId``).
 
-    Routing caveat: recipients come from the representative's emailCategory, so
-    ``"process"`` grouping across multiple models notifies only the
-    representative's category (see SCHEMA.md §1.5).
+    ``email_group`` is the optional recipient-category suffix the operator sets
+    (e.g. ``"TEAM1"``). When set, RMS composes the full category
+    ``EMAIL-{process}-{model_token}-{email_group}`` (model_token = ``"ALL"`` for
+    process grouping, else the representative's eqpModel) and sends it directly
+    so Akka routes without deriving from a representative eqpId. It is a single
+    value — ``process``/``model`` vary per group automatically, so one suffix is
+    correct across every group regardless of scope. Must contain no ``-`` (the
+    category separator) and must resolve to an EMAILINFO category that exists.
+    When unset, Akka derives recipients as before. See
+    docs/rms-email-group-routing-decision-2026-06-14.md.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -345,7 +349,19 @@ class NotifyChannel(BaseModel):
     email_code: str = "RESOURCE_MONITOR"
     email_subcode: str | None = None
     group_by: GroupBy = "eqp"
-    representatives: dict[str, str] = Field(default_factory=dict)
+    email_group: str | None = None
+
+
+# Keys removed from NotifyChannel but possibly present in already-stored docs.
+# NotifyChannel uses ``extra="forbid"``, so they must be dropped before
+# model_validate to load legacy documents without a migration.
+_REMOVED_NOTIFY_KEYS = ("representatives",)
+
+
+def _strip_legacy_notify(channel: dict[str, Any]) -> dict[str, Any]:
+    if not any(k in channel for k in _REMOVED_NOTIFY_KEYS):
+        return channel
+    return {k: v for k, v in channel.items() if k not in _REMOVED_NOTIFY_KEYS}
 
 
 class Governance(BaseModel):
@@ -418,7 +434,7 @@ class MonitorProfile(BaseModel):
             measures=[Measure.model_validate(m) for m in doc.get("measures", [])],
             rules=[Rule.model_validate(r) for r in doc.get("rules", [])],
             notify={
-                k: NotifyChannel.model_validate(v)
+                k: NotifyChannel.model_validate(_strip_legacy_notify(v))
                 for k, v in doc.get("notify", {}).items()
             },
         )

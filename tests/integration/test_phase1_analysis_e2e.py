@@ -469,6 +469,39 @@ async def test_group_by_model_collapses_to_one_email(real_es, phase1_db, real_re
 
 
 # ======================================================================
+# E6e — email_group: RMS가 수신자 카테고리를 조립해 payload에 직접 실음
+# ======================================================================
+async def test_group_by_model_email_category_e2e(real_es, phase1_db, real_redis, ns, mock_email_server):
+    process = "E2E_ECAT"
+    index = await _seed_es(real_es, process, [
+        {"eqpId": "E2E-EC-01", "category": "cpu", "metric": "total_used_pct", "value": 91.0},
+        {"eqpId": "E2E-EC-02", "category": "cpu", "metric": "total_used_pct", "value": 99.0},
+    ])
+    for e in ("E2E-EC-01", "E2E-EC-02"):
+        await _seed_eqp_info(phase1_db, process, e, eqpModel="MODELG")
+    profile = MonitorProfile(
+        scope=Scope(process=process),
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[_warn()],
+        notify={"default": NotifyChannel(cooldown_minutes=30, group_by="model",
+                                         email_group="TEAM1")},
+    )
+    await _seed_profile(phase1_db, profile)
+    try:
+        await _drive(real_es, phase1_db, real_redis, ns, mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    received = mock_email_server["received"]
+    assert len(received) == 1
+    (payload,) = received
+    # RMS composes the recipient category directly (model grouping → eqpModel token)
+    assert payload["emailCategory"] == "EMAIL-E2E_ECAT-MODELG-TEAM1"
+    assert payload["displayId"] == "MODELG"  # title headline = group_value
+
+
+# ======================================================================
 # E6c — group_by 운영 스모크(로컬 재현): eqp=2통 vs model=1통 vs 2틱째=0통
 # 운영 핸드오프의 "group_by 스모크"를 실 ES/Mongo/Redis + 로컬 이메일 캡처 서버로
 # 흉내 낸다. -s 로 실행하면 내러티브가 출력된다.

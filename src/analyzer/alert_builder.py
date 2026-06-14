@@ -62,13 +62,30 @@ def resolve_group_value(
 
     ``eqp`` → the eqpId (per-equipment, current behaviour). ``model`` → the
     eqpModel. ``process`` → the process name. This is the value the cooldown
-    key uses for the group, and the key ``NotifyChannel.representatives`` is
-    indexed by (so operators write ``{"MODEL_A": "EQP001"}``)."""
+    key uses for the group and (for group sends) the title headline
+    (``displayId``)."""
     if group_by == "model":
         return eqp_info.get("eqpModel", "")
     if group_by == "process":
         return process
     return breach.eqp_id
+
+
+def build_email_category(
+    process: str, group_by: GroupBy, eqp_model: str, email_group: str | None
+) -> str | None:
+    """Compose the recipient category RMS sends directly to Akka.
+
+    Format ``EMAIL-{process}-{model_token}-{email_group}`` where ``model_token``
+    is ``"ALL"`` for ``process`` grouping (models are mixed, no single model) and
+    the representative equipment's eqpModel otherwise (``model``/``eqp``). Returns
+    ``None`` when ``email_group`` is unset/empty — the channel then falls back to
+    Akka's ``getEmailCategory`` derivation. See
+    docs/rms-email-group-routing-decision-2026-06-14.md §3.1."""
+    if not email_group:
+        return None
+    model_token = "ALL" if group_by == "process" else eqp_model
+    return f"EMAIL-{process}-{model_token}-{email_group}"
 
 
 def resolve_code_subcode(notify: NotifyChannel, breach: ThresholdBreach) -> tuple[str, str]:
@@ -92,6 +109,8 @@ def build_alert_request(
     eqp_lookup: dict[str, dict[str, Any]] | None = None,
     timestamp: datetime | None = None,
     template: dict[str, Any] | None = None,
+    email_category: str | None = None,
+    display_id: str | None = None,
 ) -> EmailAlertRequest:
     """Construct an EmailAlertRequest from a breach + equipment info + channel.
 
@@ -152,6 +171,8 @@ def build_alert_request(
         variables=variables,
         rendered_body=rendered_body,
         title=title,
+        email_category=email_category,
+        display_id=display_id,
     )
 
 

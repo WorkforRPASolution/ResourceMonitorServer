@@ -8,6 +8,7 @@ import pytest
 
 from src.analyzer.alert_builder import (
     build_alert_request,
+    build_email_category,
     make_cooldown_key,
     resolve_group_value,
 )
@@ -44,6 +45,28 @@ def _breach(**over):
 
 
 _EQP = {"localpc": "HOST-01", "ipAddr": "10.0.0.1", "eqpModel": "MODEL-X", "line": "LINE-A"}
+
+
+class TestBuildEmailCategory:
+    """RMS가 수신자 카테고리를 직접 조립한다 (EMAIL-{process}-{model_token}-{email_group}).
+
+    process 묶음은 모델 혼재라 model_token=ALL(대문자), 그 외(model/eqp)는 대표 장비의
+    eqpModel. email_group 미설정이면 None → 조립 안 함(Akka 역산 폴백)."""
+
+    def test_model_group_uses_eqp_model(self):
+        assert build_email_category("CVD", "model", "MODEL_A", "TEAM1") == "EMAIL-CVD-MODEL_A-TEAM1"
+
+    def test_eqp_group_uses_eqp_model(self):
+        assert build_email_category("CVD", "eqp", "MODEL_A", "TEAM1") == "EMAIL-CVD-MODEL_A-TEAM1"
+
+    def test_process_group_uses_all_token(self):
+        assert build_email_category("CVD", "process", "MODEL_A", "TEAM1") == "EMAIL-CVD-ALL-TEAM1"
+
+    def test_none_email_group_returns_none(self):
+        assert build_email_category("CVD", "model", "MODEL_A", None) is None
+
+    def test_empty_email_group_returns_none(self):
+        assert build_email_category("CVD", "process", "MODEL_A", "") is None
 
 
 class TestBuildAlertRequest:

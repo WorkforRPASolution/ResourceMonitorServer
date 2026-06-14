@@ -48,8 +48,12 @@ def _es_max(eqp_id, value):
 
 
 def _settings():
+    # Pin custom-body OFF: these engine tests assert the legacy/off path
+    # explicitly. The production default is True (see test_settings.py); the
+    # ON path has its own tests via _settings_body_on().
     return AppSettings(grafana_base_url="http://grafana:3000",
-                       grafana_dashboard_uid="abc123", email_app_name="ARS")
+                       grafana_dashboard_uid="abc123", email_app_name="ARS",
+                       rms_custom_body_enabled=False)
 
 
 def _make_deps(profile, equipment=None, *, real_qb=False):
@@ -287,7 +291,7 @@ _EQP_B1 = {"eqpId": "EQP-B1", "eqpModel": "MODEL_B", "process": "CVD",
            "localpc": "PCB1", "ipAddr": "10.0.0.21", "line": "L2", "category": "MAIN"}
 
 
-def _cpu_profile_group(group_by="eqp", representatives=None):
+def _cpu_profile_group(group_by="eqp", email_group=None):
     return MonitorProfile(
         scope=Scope(process="*"),
         measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
@@ -295,7 +299,7 @@ def _cpu_profile_group(group_by="eqp", representatives=None):
         rules=[Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
                     when=[Condition(fact="cpu.max", op=">=", value=80)])],
         notify={"default": NotifyChannel(cooldown_minutes=30, group_by=group_by,
-                                         representatives=representatives or {})},
+                                         email_group=email_group)},
     )
 
 
@@ -335,21 +339,49 @@ class TestGroupSend:
             "CVD", "MODEL_A", "@system", "default", "WARNING", 30
         )
 
-    async def test_group_by_model_representative_pinned(self):
-        deps = _make_deps(_cpu_profile_group("model", {"MODEL_A": "EQP-A2"}),
+    async def test_group_by_model_sets_email_category_and_display_id(self):
+        deps = _make_deps(_cpu_profile_group("model", email_group="TEAM1"),
                           equipment=[_EQP_A1, _EQP_A2], real_qb=True)
         deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
         await _engine(deps).run_analysis("CVD", 5)
         alert = deps.email_client.send_alert.await_args.args[0]
-        assert alert.hostname == "EQP-A2"  # pinned representative
+        # RMS composes the recipient category directly; model_token = eqpModel
+        assert alert.email_category == "EMAIL-CVD-MODEL_A-TEAM1"
+        assert alert.display_id == "MODEL_A"  # title headline = group_value
+        assert alert.to_payload()["emailCategory"] == "EMAIL-CVD-MODEL_A-TEAM1"
 
-    async def test_group_by_model_pinned_absent_falls_back_to_min(self):
-        deps = _make_deps(_cpu_profile_group("model", {"MODEL_A": "EQP-ZZ"}),
+    async def test_group_by_process_sets_all_token(self):
+        deps = _make_deps(_cpu_profile_group("process", email_group="TEAM1"),
+                          equipment=[_EQP_A1, _EQP_B1], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        await _engine(deps).run_analysis("CVD", 5)
+        alert = deps.email_client.send_alert.await_args.args[0]
+        # process grouping mixes models → model_token = ALL
+        assert alert.email_category == "EMAIL-CVD-ALL-TEAM1"
+        assert alert.display_id == "CVD"
+
+    async def test_email_group_unset_omits_routing_fields(self):
+        deps = _make_deps(_cpu_profile_group("model"),  # no email_group
                           equipment=[_EQP_A1, _EQP_A2], real_qb=True)
         deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
         await _engine(deps).run_analysis("CVD", 5)
         alert = deps.email_client.send_alert.await_args.args[0]
-        assert alert.hostname == "EQP-A1"
+        assert alert.email_category is None  # → Akka derives (fallback)
+        assert "emailCategory" not in alert.to_payload()
+        assert alert.display_id == "MODEL_A"  # headline still set for group send
+
+    async def test_email_group_without_custom_body_warns(self):
+        deps = _make_deps(_cpu_profile_group("model", email_group="TEAM1"),
+                          equipment=[_EQP_A1, _EQP_A2], real_qb=True)
+        deps.es.client.search = AsyncMock(side_effect=_search_all_breach())
+        cap = structlog.testing.LogCapture()
+        structlog.configure(processors=[cap])
+        try:
+            await _engine(deps).run_analysis("CVD", 5)  # _settings(): flag off
+        finally:
+            structlog.reset_defaults()
+        events = [e["event"] for e in cap.entries]
+        assert "email_group_without_custom_body" in events
 
     async def test_group_by_process_spans_models_one_email(self):
         # ⚠ routing caveat: MODEL_A + MODEL_B under process grouping → ONE email

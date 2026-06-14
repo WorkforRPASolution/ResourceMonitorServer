@@ -633,7 +633,7 @@
       <tr><td><code>notify.&lt;name&gt;.email_code</code></td><td>string</td><td class="c opt">선택</td><td class="c"><code>"RESOURCE_MONITOR"</code></td><td><code>EMAIL_TEMPLATE_REPOSITORY</code> 매칭 코드</td></tr>
       <tr><td><code>notify.&lt;name&gt;.email_subcode</code></td><td>string｜null</td><td class="c opt">선택</td><td class="c"><code>null</code></td><td><code>null</code>이면 <code>"{category}_{severity}"</code> 자동</td></tr>
       <tr><td><code>notify.&lt;name&gt;.group_by</code></td><td>enum</td><td class="c opt">선택</td><td class="c"><code>"eqp"</code></td><td>발송 단위: <code>eqp</code>(장비별, 현행) / <code>model</code> / <code>process</code></td></tr>
-      <tr><td><code>notify.&lt;name&gt;.representatives</code></td><td>object</td><td class="c opt">선택</td><td class="c"><code>{}</code></td><td>그룹값→대표 eqpId(예 <code>{"MODEL_A":"EQP001"}</code>). 미지정 시 최소 eqpId 자동</td></tr>
+      <tr><td><code>notify.&lt;name&gt;.email_group</code></td><td>string|null</td><td class="c opt">선택</td><td class="c"><code>null</code></td><td>수신자 카테고리 접미사(팀/타입, 예 <code>"TEAM1"</code>). 설정 시 RMS가 <code>EMAIL-{process}-{model_token}-{email_group}</code> 조립(process 묶음은 model_token=<code>ALL</code>). 미설정 시 Akka 역산. <code>-</code> 금지</td></tr>
     </tbody>
   </table>
   <h3>cooldown(이메일 폭주 방지) 키</h3>
@@ -644,14 +644,14 @@
   <h3><code>group_by</code> — 메일 발송 단위(집계)</h3>
   <p class="analogy">광범위 scope에서 장비 N대가 동시에 걸리면 기본(<code>eqp</code>)은 <b>N통</b>이 나갑니다. <code>model</code>/<code>process</code>로 묶으면 같은 그룹을 <b>메일 1통으로 집계</b>해 폭주를 막습니다.</p>
   <ul>
-    <li><b>주소(수신자)</b>: 그룹 메일 1통은 <b>대표 eqpId</b>(<code>representatives</code> 지정값, 없으면 그룹 내 최소 eqpId)를 <code>hostname</code>으로 보내고, Akka가 <b>대표의 emailCategory</b>로 수신자를 해석합니다(엔드포인트·EQP_INFO/EMAILINFO 구조 무변경).</li>
-    <li><b>본문</b>: 걸린 장비 목록이 알림 변수 <code>AffectedEquipment</code>/<code>AffectedCount</code>로 전달됩니다(템플릿에서 사용). 대표 1대 기준 값(MetricName/CurrentValue 등)은 그대로.</li>
+    <li><b>주소(수신자)</b>: <code>email_group</code>(접미사)을 지정하면 RMS가 <code>EMAIL-{process}-{model_token}-{email_group}</code>를 조립해 수신자에게 <b>직접</b> 발송합니다(<code>model</code>/<code>eqp</code> 묶음은 model_token=대표 eqpModel, <b><code>process</code> 묶음은 <code>ALL</code></b>). 미지정 시 Akka가 기존처럼 역산합니다. 대표 보고 장비(<code>hostname</code>)는 그룹 내 최소 eqpId(표시·컨텍스트 전용).</li>
+    <li><b>제목·본문</b>: 제목 헤드라인은 그룹값(<code>displayId</code>, 예 <code>[MODEL-A]</code>/<code>[PHOTO]</code>). 걸린 장비 목록은 알림 변수 <code>AffectedEquipment</code>/<code>AffectedCount</code>로 전달됩니다.</li>
   </ul>
-  <div class="note warn"><span class="tag">⚠️ 라우팅 한계</span> 수신자는 <b>대표 1대</b>의 emailCategory(<code>EMAIL-[process]-[model]-[group]</code>)입니다. <code>model</code> 그룹은 보통 단일 category로 정확하지만, <b><code>process</code> 그룹은 모델이 섞이면 여러 category</b>가 되어 대표 모델 담당만 통지되고 타 모델은 누락될 수 있습니다. <code>representatives</code>로 대표를 명시하거나 <code>model</code> 단위를 쓰세요. (장비별 상세를 본문 HTML 표로 넣는 <code>@contents</code>는 후속.)</div>
-<pre><span class="tok-com">// 모델 단위로 1통 집계, MODEL_A 그룹은 EQP001을 대표(수신자)로 고정</span>
+  <div class="note warn"><span class="tag">⚠️ 전제·데이터</span> 조립한 카테고리는 <b>EMAILINFO에 실재</b>해야 합니다(없으면 수신자 0명). 토큰(process/eqpModel/<code>ALL</code>)은 EMAILINFO category 토큰과 글자 단위로 일치해야 하며 <code>email_group</code>에 <code>-</code>는 넣지 마세요. <code>process</code> 묶음도 <code>EMAIL-{process}-ALL-{email_group}</code>로 공정 전체에 정확히 라우팅됩니다(과거 "대표 모델만 통지" 한계 해소).</div>
+<pre><span class="tok-com">// 모델 단위 1통 집계 + 수신자 카테고리 접미사 TEAM1 (→ EMAIL-{process}-{model}-TEAM1)</span>
 <span class="tok-key">"notify"</span>: {
   <span class="tok-key">"default"</span>: { <span class="tok-key">"cooldown_minutes"</span>: <span class="tok-num">30</span>, <span class="tok-key">"email_code"</span>: <span class="tok-str">"RESOURCE_MONITOR"</span>,
-               <span class="tok-key">"group_by"</span>: <span class="tok-str">"model"</span>, <span class="tok-key">"representatives"</span>: { <span class="tok-key">"MODEL_A"</span>: <span class="tok-str">"EQP001"</span> } }
+               <span class="tok-key">"group_by"</span>: <span class="tok-str">"model"</span>, <span class="tok-key">"email_group"</span>: <span class="tok-str">"TEAM1"</span> }
 }</pre>
 </section>
 
@@ -931,8 +931,8 @@ window.__SCHEMA_GUIDE_COVERAGE = [
   // 연산자 7 + 정량자 3
   ">=",">","<=","<","==","!=","trend==","any","all","count",
   // notify
-  "cooldown_minutes","email_code","email_subcode","group_by","representatives",
-  "AffectedEquipment","라우팅 한계",
+  "cooldown_minutes","email_code","email_subcode","group_by","email_group",
+  "AffectedEquipment","displayId","라우팅 한계",
   // 검증 규칙 1~10 (각 규칙 식별 문구)
   "measure id 유일","시간축 fact","bucketing.seconds × points","baseline_dev",
   "ALLOWED_OPS","interval_minutes ≤","count_min ≥ 1","동일 proc","dead fact",

@@ -39,7 +39,7 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 - 페이로드는 **정확히 9필드**: `hostname, ip, app, process, model, line, code, subcode, variables`. **`renderedBody`/`body` 없음.** (`models.py:44-56`)
 - `variables`(=치환 토큰 소스)는 `build_alert_request`에서 구성: `Severity, Category, MetricName, CurrentValue, Threshold, WindowMin, GrafanaUrl` (+그룹 발송 시 `AffectedEquipment, AffectedCount`). (`alert_builder.py:81-92`)
 - 키 식별: `code`=`notify.email_code`(기본 `RESOURCE_MONITOR`), `subcode`=`notify.email_subcode` 또는 `{CATEGORY}_{SEVERITY}`(예 `CPU_CRITICAL`). (`alert_builder.py:73`, `db/models.py:345`)
-- `NotifyChannel` 스키마: `cooldown_minutes, email_code, email_subcode, group_by, representatives` 뿐. `extra="forbid"`. → 본문/템플릿 필드를 추가하려면 스키마 변경 필요. (`db/models.py:325-348`)
+- `NotifyChannel` 스키마: `cooldown_minutes, email_code, email_subcode, group_by, email_group` 뿐. `extra="forbid"`. → 본문/템플릿 필드를 추가하려면 스키마 변경 필요. (`db/models.py:325-348`)
 - **추가 작업 seam = `build_alert_request`** (breach + eqp_info + notify + window + affected가 모두 모이는 단 하나의 함수). (`alert_builder.py:58-107`)
 
 ### 1.2 Akka가 본문을 만드는 방식

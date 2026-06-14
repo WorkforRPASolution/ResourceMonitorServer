@@ -31,9 +31,12 @@ class TestAppSettingsDefaults:
         assert s.mongo_db == "EARS"
 
     def test_rms_custom_body_defaults(self):
-        """Option C dark-launch: off by default, conservative size guards."""
+        """Option C is the intended operating mode → on by default when env
+        unset (see docs/rms-email-group-routing-decision-2026-06-14.md); set
+        MONITOR_RMS_CUSTOM_BODY_ENABLED=false to opt out. Conservative size
+        guards unchanged."""
         s = AppSettings()
-        assert s.rms_custom_body_enabled is False
+        assert s.rms_custom_body_enabled is True
         assert s.rms_erb_row_limit == 50
         assert s.rms_body_byte_cap == 256000
 

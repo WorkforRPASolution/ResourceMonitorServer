@@ -139,22 +139,33 @@ class TestMonitorProfileRoundtrip:
 
     def test_notify_group_by_roundtrips(self):
         p = _make_profile(notify={"default": NotifyChannel(
-            cooldown_minutes=30, group_by="model",
-            representatives={"MODEL_A": "EQP001"})})
+            cooldown_minutes=30, group_by="model", email_group="TEAM1")})
         doc = p.to_mongo()
         assert doc["notify"]["default"]["group_by"] == "model"
         restored = MonitorProfile.from_mongo(doc)
         assert restored.notify["default"].group_by == "model"
-        assert restored.notify["default"].representatives == {"MODEL_A": "EQP001"}
+        assert restored.notify["default"].email_group == "TEAM1"
 
     def test_legacy_notify_without_group_by_defaults_eqp(self):
         """Existing Mongo docs predate notify.group_by — loading must default eqp."""
         doc = _make_profile().to_mongo()
         doc["notify"]["default"].pop("group_by", None)
-        doc["notify"]["default"].pop("representatives", None)
         restored = MonitorProfile.from_mongo(doc)
         assert restored.notify["default"].group_by == "eqp"
-        assert restored.notify["default"].representatives == {}
+        assert restored.notify["default"].email_group is None
+
+    def test_from_mongo_strips_legacy_representatives(self):
+        """Pre-existing docs carry the removed ``representatives`` field; with
+        NotifyChannel ``extra="forbid"`` it must be stripped on load (no
+        migration), not raise ValidationError."""
+        doc = _make_profile(notify={"default": NotifyChannel(
+            cooldown_minutes=30, group_by="model")}).to_mongo()
+        # simulate a legacy stored doc that still has the dropped field
+        doc["notify"]["default"]["representatives"] = {"MODEL_A": "EQP001"}
+        restored = MonitorProfile.from_mongo(doc)  # must not raise
+        assert restored.notify["default"].group_by == "model"
+        assert restored.notify["default"].email_group is None
+        assert not hasattr(restored.notify["default"], "representatives")
 
     def test_duplicate_measure_id_rejected(self):
         with pytest.raises(ValueError, match="duplicate measure id"):

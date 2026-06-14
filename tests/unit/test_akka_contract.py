@@ -88,6 +88,40 @@ def _legacy_request() -> EmailAlertRequest:
     )
 
 
+_GROUPED_VARIABLES = {
+    **_VARIABLES,
+    "AffectedEquipment": "EQP001, EQP050",
+    "AffectedCount": "2",
+}
+_GROUPED_BODY = (
+    "<h3>[CPU] CRITICAL 임계 초과</h3>"
+    "<table border=\"1\"><tr><th>장비</th><th>현재값</th></tr>"
+    "<tr><td>EQP001</td><td>96.5</td></tr>"
+    "<tr><td>EQP050</td><td>97.1</td></tr></table>"
+)
+_GROUPED_TITLE = "[EARS] CPU CRITICAL - PHOTO"
+_GROUPED_CATEGORY = "EMAIL-PHOTO-ALL-TEAM1"
+_GROUPED_DISPLAY_ID = "PHOTO"
+
+
+def _grouped_request() -> EmailAlertRequest:
+    return EmailAlertRequest(
+        hostname="EQP001",
+        ip="10.0.0.99",
+        app="ARS",
+        process="PHOTO",
+        eqp_model="MODEL-A",
+        line="L1",
+        code="RESOURCE_MONITOR",
+        subcode="CPU_CRITICAL",
+        variables=dict(_GROUPED_VARIABLES),
+        rendered_body=_GROUPED_BODY,
+        title=_GROUPED_TITLE,
+        email_category=_GROUPED_CATEGORY,
+        display_id=_GROUPED_DISPLAY_ID,
+    )
+
+
 def _load_contract() -> dict:
     return json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
 
@@ -138,6 +172,38 @@ class TestAkkaWireContract:
             assert all(isinstance(v, str) for v in values), (
                 f"{case}.variables must be all strings (Akka Map[String,String])"
             )
+
+    def test_grouped_payload_matches_contract(self):
+        """Group send (model/process) reproduces the grouped fixture: 9 fields +
+        renderedBody/title + emailCategory (RMS-composed routing) + displayId
+        (title headline = group_value)."""
+        contract = _load_contract()
+        assert _grouped_request().to_payload() == contract["grouped"]
+
+    def test_grouped_fixture_has_routing_fields(self):
+        """The grouped fixture carries the two new wire fields in camelCase."""
+        contract = _load_contract()
+        grouped = contract["grouped"]
+        assert grouped["emailCategory"] == _GROUPED_CATEGORY
+        assert grouped["displayId"] == _GROUPED_DISPLAY_ID
+        # camelCase on the wire — guards against snake_case drift
+        assert "email_category" not in grouped
+        assert "display_id" not in grouped
+
+    def test_legacy_fixture_omits_routing_fields(self):
+        """The legacy/rendered fixtures must NOT carry emailCategory/displayId →
+        Akka extracts None (backward-compat guard)."""
+        contract = _load_contract()
+        for case in ("rendered", "legacy"):
+            assert "emailCategory" not in contract[case]
+            assert "displayId" not in contract[case]
+
+    def test_grouped_roundtrips_through_model(self):
+        contract = _load_contract()
+        assert (
+            EmailAlertRequest.model_validate(contract["grouped"]).to_payload()
+            == contract["grouped"]
+        )
 
     def test_fixture_roundtrips_through_model(self):
         """Both fixtures parse back into EmailAlertRequest and re-serialize

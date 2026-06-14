@@ -196,7 +196,7 @@ SEVERITY: WARNING, CRITICAL  (rule이 소유)
 
 - **measures[]** (잰다) — `{id, category, metric, proc, window_minutes, facts[]}`. 무엇을·어떻게 ES에서 집계해 어떤 **fact**를 산출할지. 주기(interval)는 갖지 않음(집계창 window만).
 - **rules[]** (판단 + 주기) — `{id, interval_minutes, severity, combine, when[], notify, enabled}`. `when[].fact = "measureId.type"` 로 measure의 fact를 참조. **단순 임계값 = 조건 1개 rule, 복합 = 조건 여러 개 rule** (단일/복합을 컬렉션으로 가르지 않음). `enabled`(기본 true)는 rule 개별 on/off — `false`면 엔진 평가·스케줄 cadence에서 제외(문서 레벨 `enabled`와 별개).
-- **notify{}** (알린다) — 이름→`{cooldown_minutes, email_code, email_subcode?, group_by, representatives}` 맵. rule이 이름으로 참조. `group_by`(`eqp`기본/`model`/`process`)는 **메일 발송 단위** — `eqp` 외엔 같은 그룹 장비 breach를 1통으로 집계(대표 eqpId의 emailCategory로 발송, `AffectedEquipment` 변수에 목록). `representatives`는 그룹별 대표 eqpId 오버라이드. [SCHEMA.md §1.5](SCHEMA.md).
+- **notify{}** (알린다) — 이름→`{cooldown_minutes, email_code, email_subcode?, group_by, email_group?}` 맵. rule이 이름으로 참조. `group_by`(`eqp`기본/`model`/`process`)는 **메일 발송 단위** — `eqp` 외엔 같은 그룹 장비 breach를 1통으로 집계(`AffectedEquipment` 변수에 목록, 제목 헤드라인=group_value). `email_group`(접미사)을 설정하면 RMS가 `EMAIL-{process}-{model_token}-{email_group}`(process 묶음은 model_token=`ALL`)를 조립해 수신자 라우팅에 직접 사용, 미설정 시 Akka 역산. [SCHEMA.md §1.5](SCHEMA.md).
 
 핵심 규칙:
 - **1 measure 항목 = 1 fact = 1 type.** `type` 이름이 곧 fact 이름(`max`/`min`/`avg`/`last`/`p50`·`p90`·`p95`·`p99`/`spike_count`/`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`). 한 measure 내 type 유일. type 카탈로그는 닫힌 enum(`src/analyzer/fact_catalog.py`). Phase 1(`max`~`spike_count`)은 엔진 평가, Phase 2/3은 스키마 수용·엔진 skip.

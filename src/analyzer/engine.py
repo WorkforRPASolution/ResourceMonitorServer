@@ -25,6 +25,7 @@ import structlog
 from src.analyzer import fact_catalog as fc
 from src.analyzer.alert_builder import (
     build_alert_request,
+    build_email_category,
     make_cooldown_key,
     resolve_code_subcode,
     resolve_group_value,
@@ -246,10 +247,11 @@ class AnalysisEngine:
         The group identity is the cooldown key ``(process, group, proc, notify,
         severity)`` where ``group`` is the eqpId (``group_by="eqp"``, current
         behaviour) or the model/process value. Equipment breaching under one
-        group collapse into a single email addressed via a representative
-        equipment's emailCategory (pinned via ``channel.representatives`` else
-        the smallest breaching eqpId); the affected equipment are listed in the
-        alert variables (group modes only)."""
+        group collapse into a single email. The representative equipment is the
+        smallest breaching eqpId (display/context only); recipients come from
+        the channel's composed ``emailCategory`` (``email_group`` set) else
+        Akka derivation. The affected equipment are listed in the alert
+        variables and the group value is the title headline (``displayId``)."""
         # 1. bucket pending by group cooldown key
         groups: dict[tuple[str, str, str, str, str], list[_Pending]] = {}
         group_value_by_key: dict[tuple[str, str, str, str, str], str] = {}
@@ -278,12 +280,24 @@ class AnalysisEngine:
             channel = members[0].channel
             group_value = group_value_by_key[key]
             breaching_eqps = sorted({m.breach.eqp_id for m in members})
-            # representative: operator-pinned (if it actually breached) else min
-            rep_eqp = channel.representatives.get(group_value)
-            if rep_eqp not in breaching_eqps:
-                rep_eqp = breaching_eqps[0]
+            # representative = smallest breaching eqpId (display/context only;
+            # recipients come from the composed emailCategory below, not this).
+            rep_eqp = breaching_eqps[0]
             rep = next(m for m in members if m.breach.eqp_id == rep_eqp)
             affected = breaching_eqps if channel.group_by != "eqp" else None
+            # Compose recipient category + title headline. email_category is None
+            # when the channel has no email_group → payload omits it → Akka
+            # derives recipients as before.
+            email_category = build_email_category(
+                process, channel.group_by,
+                eqp_lookup[rep_eqp].get("eqpModel", ""), channel.email_group,
+            )
+            display_id = group_value if channel.group_by != "eqp" else None
+            if channel.email_group and not self._settings.rms_custom_body_enabled:
+                logger.warning(
+                    "email_group_without_custom_body",
+                    process=process, notify=members[0].notify_name,
+                )
             # Option C: when enabled, fetch the operator template (async) here —
             # keeping build_alert_request synchronous (review fix). Off → no fetch,
             # payload stays the legacy 9 fields.
@@ -302,6 +316,7 @@ class AnalysisEngine:
                 channel, rep.window_minutes, affected_equipment=affected,
                 members=[m.breach for m in members], eqp_lookup=eqp_lookup,
                 timestamp=now, template=template,
+                email_category=email_category, display_id=display_id,
             )
             if await self._deps.email_client.send_alert(alert):
                 await self._deps.cooldown_mgr.set_cooldown(

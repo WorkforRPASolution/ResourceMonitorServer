@@ -46,12 +46,20 @@ class EmailAlertRequest(BaseModel):
     # Akka uses them directly (json4s Option[String] tolerates absence — D7/§5-④).
     rendered_body: str | None = Field(default=None, alias="renderedBody")
     title: str | None = None
+    # Group send routing (additive, backward-compatible). When set, RMS has
+    # pre-composed the recipient category (EMAIL-{process}-{model}-{email_group})
+    # so Akka routes directly without getEmailCategory derivation; `display_id`
+    # replaces the representative eqpId in the title headline (= group_value).
+    # Both stay None for individual sends / unset channels → omitted from the
+    # payload, so Akka receives the legacy shape and derives as before.
+    email_category: str | None = Field(default=None, alias="emailCategory")
+    display_id: str | None = Field(default=None, alias="displayId")
 
     def to_payload(self) -> dict[str, Any]:
         """Return the JSON body Akka expects, using `model` not `eqp_model`.
 
-        `renderedBody`/`title` are included only when set, preserving the exact
-        legacy 9-field payload in dark-launch/off mode."""
+        `renderedBody`/`title`/`emailCategory`/`displayId` are included only when
+        set, preserving the exact legacy 9-field payload in dark-launch/off mode."""
         payload: dict[str, Any] = {
             "hostname": self.hostname,
             "ip": self.ip,
@@ -67,4 +75,8 @@ class EmailAlertRequest(BaseModel):
             payload["renderedBody"] = self.rendered_body
         if self.title is not None:
             payload["title"] = self.title
+        if self.email_category is not None:
+            payload["emailCategory"] = self.email_category
+        if self.display_id is not None:
+            payload["displayId"] = self.display_id
         return payload

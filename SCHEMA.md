@@ -146,13 +146,15 @@ EQP_INFO 계층을 따릅니다. 구체적 scope가 더 넓은 scope를 **상속
 | `notify.<name>.email_code` | string | | `"RESOURCE_MONITOR"` | `EMAIL_TEMPLATE_REPOSITORY` 매칭 코드 |
 | `notify.<name>.email_subcode` | string\|null | | `null` | `null`이면 `"{category}_{severity}"` 자동 |
 | `notify.<name>.group_by` | enum | | `"eqp"` | **발송 단위**: `eqp`(장비별, 현행) / `model` / `process`. `eqp` 외엔 같은 그룹의 장비 breach를 **메일 1통으로 집계** |
-| `notify.<name>.representatives` | object | | `{}` | 그룹값→대표 eqpId 오버라이드(예 `{"MODEL_A":"EQP001"}`). 그룹 메일의 `hostname`(수신자 해석 기준). 미지정 시 그룹 내 최소 eqpId 자동 |
+| `notify.<name>.email_group` | string\|null | | `null` | 수신자 카테고리 접미사(팀/타입, 예 `"TEAM1"`). 설정 시 RMS가 `EMAIL-{process}-{model_token}-{email_group}`를 조립해 직접 전송(수신자 라우팅). 미설정 시 Akka가 역산. `-` 포함 금지 |
 
 **cooldown 키** = `{prefix}:cooldown:{process}:{group}:{proc}:{notify}:{severity}` — `group`은 `group_by="eqp"`면 eqpId(현행과 동일), `model`/`process`면 그 값. 같은 (그룹, proc, 알림채널, 심각도) 단위로 억제·집계되며, 같은 notify를 공유하는 rule들은 한 사건으로 묶입니다.
 
-**그룹 발송(`group_by` ≠ `eqp`)**: 한 그룹에 걸린 장비들을 **메일 1통**으로 모읍니다. 1통의 `hostname`=대표 eqpId(`representatives` 지정값 또는 최소 eqpId) → Akka가 **대표의 emailCategory**로 수신자 해석(엔드포인트·EQP_INFO/EMAILINFO 구조 무변경). 걸린 장비 목록은 알림 변수 `AffectedEquipment`/`AffectedCount`로 전달(템플릿에서 사용).
+**그룹 발송(`group_by` ≠ `eqp`)**: 한 그룹에 걸린 장비들을 **메일 1통**으로 모읍니다. 대표 보고 장비(`hostname`)는 그룹 내 **최소 eqpId**(표시·컨텍스트 전용). 제목 헤드라인은 그룹 식별자(`displayId` = group_value, 예 `[MODEL-A]`/`[PHOTO]`)로 표시됩니다. 걸린 장비 목록은 알림 변수 `AffectedEquipment`/`AffectedCount`로 전달.
 
-> ⚠️ **라우팅 한계**: 수신자는 *대표 1대*의 emailCategory(`EMAIL-[process]-[model]-[group]`)다. `model` 그룹은 보통 단일 category로 정확하지만, **`process` 그룹은 모델이 섞이면 여러 category**가 되어 대표 모델 담당만 통지되고 타 모델은 누락될 수 있다. 이 경우 `representatives`로 대표를 명시하거나 `model` 단위를 쓴다. (장비별 상세를 본문에 HTML 표로 넣는 `@contents`는 후속 작업.)
+**수신자 라우팅**: `email_group`을 설정하면 RMS가 `EMAIL-{process}-{model_token}-{email_group}`를 **직접 조립**해 payload `emailCategory`로 보냅니다(`model`/`eqp` 묶음은 model_token=대표 eqpModel, **`process` 묶음은 `ALL`**). Akka는 이 값을 그대로 써 EMAIL_RECIPIENTS/EQP_INFO 역산을 건너뜁니다. → `process` 묶음이 모델 혼재여도 `EMAIL-{process}-ALL-{email_group}` 공정 전체 카테고리로 정확히 라우팅됩니다(과거 "대표 모델만 통지" 한계 해소). `email_group` 미설정 시 기존 Akka 역산으로 폴백.
+
+> ⚠️ **전제·데이터**: 조립한 카테고리는 **EMAILINFO에 실재**해야 한다(없으면 수신자 0명). 토큰(process/eqpModel/`ALL`)은 EMAILINFO category 토큰과 글자 단위로 일치해야 한다. 그룹 본문이 영향 장비를 표로 나열하려면 `MONITOR_RMS_CUSTOM_BODY_ENABLED=true`(기본값) 권장. 상세: `docs/rms-email-group-routing-decision-2026-06-14.md`.
 
 ---
 

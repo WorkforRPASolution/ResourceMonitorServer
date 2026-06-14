@@ -76,10 +76,12 @@ class AppSettings(BaseSettings):
     grafana_base_url: str = "http://grafana:3000"
     grafana_dashboard_uid: str = ""
 
-    # RMS custom email body (Option C). Dark-launch: off by default so the
-    # payload stays the legacy 9 fields until explicitly enabled (D7). The size
-    # guards are conservative backstops for the unknown Redis/ESB body cap (D3).
-    rms_custom_body_enabled: bool = False
+    # RMS custom email body (Option C). On by default — it is the intended
+    # operating mode and the basis for group-send routing (email_group); set
+    # MONITOR_RMS_CUSTOM_BODY_ENABLED=false to fall back to Akka legacy
+    # templates. See docs/rms-email-group-routing-decision-2026-06-14.md. The
+    # size guards are conservative backstops for the unknown Redis/ESB body cap.
+    rms_custom_body_enabled: bool = True
     rms_erb_row_limit: int = 50
     rms_body_byte_cap: int = 256000
 

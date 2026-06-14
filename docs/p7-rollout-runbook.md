@@ -18,9 +18,9 @@
 
 - [ ] RMS: `src/alert/{tokens,body_renderer}.py`, `src/analyzer/alert_builder.py`(플래그 분기), `src/alert/models.py`(`renderedBody`/`title` 조건부 직렬화), `src/db/repository.py`(5-tier 폴백 accessor) 머지.
 - [ ] Akka(HttpWebServer): `JsonInterfaces.scala`(`renderedBody`/`title: Option[String]`), `EmailBodyResolver.scala`, `EmailWorker.scala`(SendEmail renderedBody 분기 + legacy `else` byte-unchanged) 머지.
-- [ ] WebManager: `server/features/rms-email-template/`(CRUD), `client/src/features/rms-email-template/`(편집기·렌더러·lint) 머지.
+- [x] **WebManager 머지 완료(2026-06-12 확인)**: `server/features/rms-email-template/`(CRUD), `client/src/features/rms-email-template/`(편집기·렌더러·lint) — `feat/rms-email-template` → `main` **PR #19**(`86d52d1`)로 머지.
 - [x] **ERB 펜스 견고성(2026-06 감사)**: RMS 렌더러 `body_renderer._expand_erb` total화(불균형/다중 ERB 무예외·무누출, `tests/unit/test_body_renderer.py::TestMalformedErbIsTotal`). WebManager 서버 검증(`erbValidation.js`)·클라 lint는 1차 가드. **WebManager JS 프리뷰 렌더러 미러 완료**(2026-06-11 확인) — `bodyRenderer.js`의 `stripErb`/`ERB_BLOCK_RE`/`expandErb`가 Python canon(`_ERB_BLOCK_RE`)과 byte-패리티(적용 기준: `docs/rms-email-erb-hardening-webmanager-handoff.md`). **게이트 충족** — on 전환 전 별도 조치 불필요.
-- [ ] 플래그 **OFF 확인**: `MONITOR_RMS_CUSTOM_BODY_ENABLED` 미설정 또는 `false`(기본 False).
+- [ ] 플래그 상태: `MONITOR_RMS_CUSTOM_BODY_ENABLED`. **2026-06-14 기준 기본값은 `True`로 변경됨**(Option C가 권장 운영 모드·그룹 발송 `email_group` 라우팅의 전제 — `docs/rms-email-group-routing-decision-2026-06-14.md`). 이 다크런치 런북의 "OFF 기본" 전제는 그 시점부터 무효이며, OFF는 명시적 opt-out(`=false`)일 때만.
 - [ ] 사이즈 가드 기본값: `MONITOR_RMS_ERB_ROW_LIMIT=50`, `MONITOR_RMS_BODY_BYTE_CAP=256000`.
 
 ## 2. 시드 (플래그 on 전 게이트)
@@ -134,12 +134,12 @@ legacy 경로는 byte-unchanged라 **현행 100% 복귀**(페이로드 9필드).
 광범위 scope에서 장비 N대 동시 breach 시 메일 N통 → 1통으로 줄이는 집계 발송.
 **Option C와 독립**이며 플래그/다크런치가 없다.
 
-- **환경변수 없음** — notify 채널별 설정(`group_by`, `representatives`).
-- **하위호환/회귀 0**: 기존 notify는 `group_by="eqp"`(기본)로 로드 → 동작·페이로드·쿨다운 키 불변.
+- **환경변수 없음** — notify 채널별 설정(`group_by`, `email_group`).
+- **하위호환/회귀 0**: 기존 notify는 `group_by="eqp"`(기본)로 로드 → 동작·페이로드·쿨다운 키 불변. 과거 `representatives` 필드는 제거됐고, 기존 저장 문서의 값은 로드 시 자동 strip된다(`from_mongo`).
 - **자동 재시드 없음**: startup 자동 seed는 제거됨(`seed.py` 미import) → group_by 추가로 인한 해시 변동/재시드 우려 없음.
-- **활성화**: 운영자가 notify 채널에 `group_by: "model"`(또는 `"process"`) + 선택 `representatives: {그룹값: 대표eqpId}` 설정. `PATCH /profiles/{...}/notify/{name}` 또는 playground 가이드(`docs/resource-monitor-profile-playground.html`) 참조.
+- **활성화**: 운영자가 notify 채널에 `group_by: "model"`(또는 `"process"`) + 선택 `email_group: "TEAM1"`(수신자 카테고리 접미사) 설정. `PATCH /profiles/{...}/notify/{name}` 참조.
 - **스모크**: 한 채널 `group_by=model` → 동일 모델 2대 동시 breach 유발 → 메일 **1통**(본문 `@AffectedEquipment` 목록·`@AffectedCount`) + 쿨다운 **1회**(2틱째 억제 확인).
-- **라우팅 한계(중요)**: `process` 그룹은 모델 혼재 시 **대표 1대의 emailCategory만** 통지 → 타 모델 수신자 누락 가능. 운영자는 `model` 단위 사용 또는 `representatives`로 대표 지정 권장. (SCHEMA §1.5 / schema-guide.html §8 / `db/models.py` docstring 명시.)
+- **수신자 라우팅**: `email_group` 설정 시 RMS가 `EMAIL-{process}-{model_token}-{email_group}`(process 묶음은 `ALL`)를 조립해 직접 전송 → `process` 그룹의 모델 혼재 누락 문제 없음(EMAILINFO에 해당 카테고리 실재 필요). 미설정 시 Akka 역산. 상세: `docs/rms-email-group-routing-decision-2026-06-14.md`.
 
 검증(단위): `pytest tests/unit/test_analysis_engine.py tests/unit/test_alert_builder.py -q`
 (그룹 집계·대표 폴백·그룹 쿨다운·eqp 회귀 가드 포함, 현재 그린).
