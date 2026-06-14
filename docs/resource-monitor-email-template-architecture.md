@@ -1,6 +1,6 @@
 # RMS 알림 메일 본문(@contents) 사용자 정의 — 설계 검토
 
-> 상태: **구현 완료(P1~P6) — 운영 롤아웃(P7) 대기.** Option C 채택·구현(RMS 렌더 + `renderedBody`/`title` 추가 필드 + Akka 직접 사용), 적대 리뷰 통과. 다크런치 플래그 `rms_custom_body_enabled` 기본 off. 롤아웃 절차: [p7-rollout-runbook.md](p7-rollout-runbook.md).
+> 상태: **구현 완료(P1~P6) — 운영 롤아웃(P7) 대기.** Option C 채택·구현(RMS 렌더 + `renderedBody`/`title` 추가 필드 + Akka 직접 사용), 적대 리뷰 통과. 플래그 `rms_custom_body_enabled`는 **2026-06-14부터 기본 on**(다크런치 종료, off→on; 그룹 발송 `email_group` 라우팅의 전제 — `docs/rms-email-group-routing-decision-2026-06-14.md`). 롤아웃 절차: [p7-rollout-runbook.md](p7-rollout-runbook.md).
 > 작성일: 2026-06-08 (구현 반영: 2026-06-09)
 > 범위: ResourceMonitorServer(RMS) 알림 메일의 **본문을 운영자가 자유롭게 구성**하는 방법. 특히 EARS `EMAIL_TEMPLATE_REPOSITORY`처럼 **별도 컬렉션 기반**으로 두고, **rule 감지 동적 데이터**를 본문에 어떻게 바인딩할지.
 > 근거: ARS 모노레포(`HttpWebServer`/`WebManager`/`EmailingAgent`/`ResourceMonitorServer`) 코드 11개 에이전트 병렬 조사 + 설계안 3종 적대 검증. 모든 사실은 `file:line`로 확인됨.
@@ -308,7 +308,7 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 - 신규 `body_renderer` 순수함수: 컨텍스트별 escape(text/url, D6) + 반복블록 expand + 스칼라 치환 + `title` 렌더(`:` 제거, D1) + body 사이즈 가드(D3) + 리터럴 `@HttpWebServerAddress` 무력화(D2). (TDD)
 - `build_alert_request` 확장: 렌더 컨텍스트(스칼라 + per-멤버 rows) 구성, 템플릿 미스/렌더 오류 시 **내장 기본 본문 fallback**(D5).
 - `engine._dispatch`: **항상** 멤버 breach 리스트 + `AnalysisResult.timestamp`를 `build_alert_request`로 전달(eqp 모드 포함).
-- `EmailAlertRequest`/`to_payload`: `renderedBody`·`title` 추가. **`NotifyChannel` 무변경**(옵트인은 전역 `settings.rms_custom_body_enabled`, 기본 off, D7).
+- `EmailAlertRequest`/`to_payload`: `renderedBody`·`title` 추가. **`NotifyChannel` 무변경**(옵트인은 전역 `settings.rms_custom_body_enabled`, **기본 on** — 2026-06-14 off→on 전환, D7).
 - 데이터 보강: `@Timestamp` 배선(`AnalysisResult.timestamp`→build_alert_request), `@Operator`(=`breach.op`)·`@GroupBy`(=`notify.group_by`)·`@GroupValue`(=`resolve_group_value(...)`) 파생 — 셋 다 build_alert_request의 기존 인자로 산출 가능(신규 파라미터 불필요). `@Metric`은 v1 미포함(@Fact 사용).
 
 **Akka (`HttpWebServer`)**
@@ -365,7 +365,8 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 
 ### D7. 옵트인/롤아웃 — **결정: NotifyChannel 무변경, 전역 settings 플래그로 dark-launch**
 - 채널별 `use_custom_body` 플래그는 **불채택**(템플릿 행 존재 여부가 곧 옵트인 → `NotifyChannel` `extra="forbid"` 유지, 스키마 churn 0).
-- 안전 롤아웃: 전역 `settings.rms_custom_body_enabled`(초기 배포 **off**, 검증 후 on). off면 RMS가 renderedBody 미전송 → 기존 동작 100% 유지.
+- 안전 롤아웃(초기): 전역 `settings.rms_custom_body_enabled`를 off 배포 → 검증 후 on. off면 RMS가 renderedBody 미전송 → 기존 동작 100% 유지.
+  > **갱신(2026-06-14)**: 다크런치 검증 완료로 **기본값을 on으로 전환**했다(Option C가 권장 운영 모드이자 그룹 발송 `email_group` 라우팅의 전제). 이제 off는 명시적 opt-out(`MONITOR_RMS_CUSTOM_BODY_ENABLED=false`)일 때만. 근거: `docs/rms-email-group-routing-decision-2026-06-14.md`.
 
 ---
 

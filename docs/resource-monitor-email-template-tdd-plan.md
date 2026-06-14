@@ -130,7 +130,7 @@
 > **핵심 정정(리뷰):** async 템플릿 조회·행 컨텍스트 조립은 **`_dispatch`(이미 async)**에서 하고, **`build_alert_request`는 sync 유지**(또는 별도 async 래퍼). 기존 sync `TestBuildAlertRequest` 호출부 불변.
 
 ### P3-1. settings (D3, D7)
-- **RED** `test_settings_defaults`: `rms_custom_body_enabled`=**False**, `rms_erb_row_limit`=50, byte cap 기본.
+- **RED** `test_settings_defaults`: `rms_custom_body_enabled`=**False**, `rms_erb_row_limit`=50, byte cap 기본. (※ 2026-06-14 기본값 **True**로 전환 — 현 `test_settings.py`는 `is True`를 단언. `docs/rms-email-group-routing-decision-2026-06-14.md`.)
 - **GREEN** 필드 추가.
 
 ### P3-2. EmailAlertRequest 모델 + to_payload (§5-④) — **올바른 파일**
