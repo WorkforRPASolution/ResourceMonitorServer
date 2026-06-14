@@ -7,6 +7,22 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
+# ──────────────────────────────────────────────────────────────────────
+# 폐쇄망 빌드 옵션 — scripts/build-image.{sh,ps1} 가 --build-arg 로 주입.
+# 모두 비어 있으면 공용 인터넷 + pypi.org 로 빌드된다(개발 PC 기본값).
+#   PIP_INDEX_URL    : 사내 PyPI 미러(Nexus) simple 인덱스 URL
+#   PIP_TRUSTED_HOST : 그 미러 호스트(자체서명 인증서 대응 = pip --trusted-host)
+#   HTTP(S)_PROXY    : 사내 프록시 (apt-get gcc + pip 다운로드 둘 다 경유)
+#   NO_PROXY         : 프록시를 거치지 않을 호스트(보통 사내 미러 호스트)
+# ──────────────────────────────────────────────────────────────────────
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY=""
+ARG PIP_INDEX_URL=""
+ARG PIP_TRUSTED_HOST=""
+ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY} no_proxy=${NO_PROXY} \
+    HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY}
+
 # Build deps for hiredis, kazoo (if it pulls native bits), etc.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc \
@@ -18,8 +34,14 @@ COPY src/ ./src/
 # Pre-build wheels for the whole dependency closure into /wheels.
 # Pinning ranges match pyproject.toml — kept explicit so this layer
 # does not invisibly drift past the version pins documented in plan v4.
-RUN pip wheel --no-deps --wheel-dir=/wheels . \
+# ${VAR:+flag $VAR} → 인자가 비어 있으면 플래그 자체가 빠져 공용 pypi.org 로 동작.
+RUN pip wheel --no-deps --wheel-dir=/wheels \
+       ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} \
+       ${PIP_TRUSTED_HOST:+--trusted-host $PIP_TRUSTED_HOST} \
+       . \
     && pip wheel --wheel-dir=/wheels \
+       ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} \
+       ${PIP_TRUSTED_HOST:+--trusted-host $PIP_TRUSTED_HOST} \
        'fastapi>=0.110.0' \
        'uvicorn[standard]>=0.27.0' \
        'pydantic>=2.0.0' \

@@ -66,8 +66,15 @@ C:\rms\
 cd C:\rms
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[dev]"
 ```
+
+> **`.[dev]` 의 의미 (중요):** 따옴표 안의 `[dev]` 가 테스트 도구(`pytest`,
+> `pytest-asyncio` 등 `pyproject.toml` 의 dev 그룹)까지 함께 설치합니다.
+> 그냥 `pip install -e .` 로 깔면 서버는 동작하지만 **`pytest` 가 없어**
+> `python -m pytest tests\ -q` 가 `No module named pytest` 로 실패합니다.
+> PowerShell 에선 `[dev]` 가 와일드카드로 해석되지 않도록 **반드시 따옴표**(`".[dev]"`)로 감싸세요.
+> 서버만 돌리고 테스트는 안 할 거라면 `pip install -e .` 만으로도 충분합니다.
 
 > **PowerShell 실행 정책 오류 발생 시:**
 > ```powershell
@@ -81,6 +88,10 @@ pip install -e .
 > pip install fastapi "uvicorn[standard]" pydantic pydantic-settings "elasticsearch[async]>=7.11,<8" motor "apscheduler>=3.10,<4" "kazoo>=2.9,<2.11" "redis>=4.5,<5.1" httpx structlog prometheus-client cachetools
 > ```
 > `hiredis` 없이도 정상 동작합니다 (Redis 파서가 pure-Python fallback 사용, 성능만 약간 하락).
+> 이 `--no-deps` 경로는 런타임만 깔므로, **테스트도 돌리려면** dev 도구를 따로 설치하세요:
+> ```powershell
+> pip install pytest pytest-asyncio pytest-cov pytest-mock pytest-xdist
+> ```
 
 설치 확인:
 ```powershell
