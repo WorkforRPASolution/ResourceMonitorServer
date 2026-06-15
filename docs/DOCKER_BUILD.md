@@ -199,20 +199,16 @@ data:
   # SASL 미사용 시 빈 값 (Secret이 빈 mechanism을 주입)
 
   # ----- Redis 5.0.6 -----
-  # DB 격리:
-  #   DB 0  = WebManager
-  #   DB 5  = ResourceMonitorServer (이 서비스)
-  #   DB 10 = socks-agent / direct-agent (docker-compose)
-  #   DB 15 = RMS integration/e2e 테스트 (localhost only)
+  # DB 격리: 0=WebManager / 5=ResourceMonitorServer(이 서비스) / 10=agent / 15=테스트
   # prefix 'RESOURCE_ALERT:' 는 belt-and-suspenders 이중 가드
-  MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
   MONITOR_REDIS_KEY_PREFIX: "RESOURCE_ALERT"
-  # ----- (선택) Redis HA via Sentinel -----
-  # MONITOR_REDIS_SENTINELS 설정 시 위 URL 대신 Sentinel 모드(현재 master 자동 추종).
-  # 포트는 보통 26379, DB 는 URL 의 /N 대신 MONITOR_REDIS_DB 로 지정.
-  # MONITOR_REDIS_SENTINELS: "mdb-redis-ha-announce-0.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-1.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-2.ears-base.svc.cluster.local:26379"
-  # MONITOR_REDIS_SENTINEL_MASTER: "mymaster"
-  # MONITOR_REDIS_DB: "5"
+  # (A) HA / Sentinel 모드 (운영 기본) — announce 파드 sentinel(26379) 목록 + master 그룹명.
+  #     ⚠️ DB 는 URL 의 /N 이 아니라 MONITOR_REDIS_DB 로 지정한다(RMS 예약=5).
+  MONITOR_REDIS_SENTINELS: "mdb-redis-ha-announce-0.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-1.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-2.ears-base.svc.cluster.local:26379"
+  MONITOR_REDIS_SENTINEL_MASTER: "mymaster"
+  MONITOR_REDIS_DB: "5"
+  # (B) 단일 Redis(비-HA) — 위 Sentinel 키를 비우고 이 URL 만 쓴다. DB 는 URL 끝의 /5.
+  # MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
 
   # ----- Email API (Akka HttpWebServer) -----
   MONITOR_EMAIL_API_URL: "http://httpwebserver.notification:8080/EmailNotify"
