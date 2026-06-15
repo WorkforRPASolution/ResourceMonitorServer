@@ -272,7 +272,7 @@ stringData:
 
   # Redis AUTH (5.0.6은 ACL 없음 — 단일 password)
   MONITOR_REDIS_PASSWORD: "CHANGE_ME"
-  # (선택) Sentinel 인증이 데이터 노드와 다를 때만. 비우면 REDIS_PASSWORD 재사용.
+  # (선택) 센티널에 requirepass 가 있을 때만. 비우면 센티널엔 AUTH 미전송(데이터 비번 폴백 안 함).
   # MONITOR_REDIS_SENTINEL_PASSWORD: ""
 
   # ZK SASL — 미사용 시 둘 다 빈 문자열
@@ -476,7 +476,7 @@ spec:
 | `MONITOR_REDIS_KEY_PREFIX` | ConfigMap | `RESOURCE_ALERT` | Redis 키 접두사 |
 | `MONITOR_REDIS_SENTINELS` | 선택 | `[]` | 설정 시 **Sentinel 모드**. `host:26379` 콤마/JSON 목록(URL 대체) |
 | `MONITOR_REDIS_SENTINEL_MASTER` | 선택 | `mymaster` | Sentinel master 그룹명 |
-| `MONITOR_REDIS_SENTINEL_PASSWORD` | **Secret** | `""` | sentinel 인증(비우면 `REDIS_PASSWORD` 재사용) |
+| `MONITOR_REDIS_SENTINEL_PASSWORD` | **Secret** | `""` | 센티널 인증(비우면 센티널엔 AUTH 미전송 — 데이터 비번 폴백 안 함) |
 | `MONITOR_REDIS_DB` | 선택 | `0` | Sentinel 모드 DB 번호(RMS 예약=5) |
 | `MONITOR_EMAIL_API_URL` | ConfigMap | `http://httpwebserver:8080/EmailNotify` | Akka 메일 API |
 | `MONITOR_EMAIL_API_TIMEOUT` | ConfigMap | `10` | 메일 API timeout(s) |

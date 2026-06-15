@@ -73,19 +73,23 @@ class RedisClient:
         """Build a Redis client bound to the Sentinel master pool.
 
         ``redis_sentinels`` items are ``host[:port]`` (port defaults to 26379,
-        the Sentinel port). Data-node connections use ``redis_password``;
-        Sentinel auth uses ``redis_sentinel_password`` if set, else falls back
-        to ``redis_password``. DB comes from ``redis_db`` (URL ``/N`` is not
-        used in this mode)."""
+        the Sentinel port). Data-node connections always use ``redis_password``.
+        Sentinel auth uses ``redis_sentinel_password`` ONLY when explicitly set —
+        it does NOT fall back to ``redis_password``. This is deliberate: a
+        Sentinel often has no ``requirepass`` even when the data nodes do
+        (e.g. redis-ha with ``auth=true`` but ``sentinel.auth=false``); sending
+        the data password to such a Sentinel is rejected with
+        "Client sent AUTH, but no password is set". If your Sentinels DO require
+        auth, set ``redis_sentinel_password`` explicitly. DB comes from
+        ``redis_db`` (URL ``/N`` is not used in this mode)."""
         sentinels: list[tuple[str, int]] = []
         for entry in self._settings.redis_sentinels:
             host, sep, port = entry.strip().rpartition(":")
             if not sep:  # no ":" → only a host was given
                 host, port = port, "26379"
             sentinels.append((host, int(port)))
-        sentinel_pw = (
-            self._settings.redis_sentinel_password.get_secret_value() or password
-        )
+        # No fallback to the data password — empty means "send no AUTH to sentinels".
+        sentinel_pw = self._settings.redis_sentinel_password.get_secret_value() or None
         sentinel = Sentinel(
             sentinels,
             sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,

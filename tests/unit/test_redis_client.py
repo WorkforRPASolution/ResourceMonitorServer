@@ -269,14 +269,22 @@ class TestRedisSentinelConnect:
         assert kwargs["protocol"] == 2
         assert kwargs["password"] == "secretpass"
 
-    async def test_sentinel_auth_falls_back_to_redis_password(self, sentinel_settings):
-        """redis_sentinel_password 미설정 시 sentinel 인증은 redis_password 재사용."""
+    async def test_sentinel_auth_omitted_when_no_sentinel_password(
+        self, sentinel_settings
+    ):
+        """redis_sentinel_password 미설정 → 센티널엔 AUTH 미전송(데이터 비번으로 폴백 X).
+
+        redis-ha 의 sentinel.auth=false 처럼 데이터 노드는 requirepass 가 있어도
+        센티널엔 비번이 없는 구성을 지원하기 위함. 데이터 비번으로 폴백하면
+        센티널이 'Client sent AUTH, but no password is set' 로 거부한다.
+        """
         client = RedisClient(sentinel_settings)
         with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
             mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
             await client.connect()
         kwargs = mock_sentinel_cls.call_args.kwargs
-        assert kwargs["sentinel_kwargs"] == {"password": "secretpass"}
+        assert kwargs["sentinel_kwargs"] is None       # 센티널 AUTH 없음
+        assert kwargs["password"] == "secretpass"      # 데이터 노드는 여전히 AUTH
 
     async def test_separate_sentinel_password_used_when_set(self):
         settings = AppSettings(

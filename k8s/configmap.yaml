@@ -6,7 +6,7 @@ metadata:
     app: resource-monitor-server
 data:
   # ----- Elasticsearch (운영 7.11.x) -----
-  MONITOR_ES_HOSTS: "http://elasticsearch.observability:9200"
+  MONITOR_ES_HOSTS: "http://rtm-elasticsearch-coordinating-only.ears-base.svc.cluster.local:9200"
   MONITOR_ES_USERNAME: "elastic"
   MONITOR_ES_USE_SSL: "false"
   MONITOR_ES_REQUEST_TIMEOUT: "30"
@@ -17,7 +17,7 @@ data:
   MONITOR_MONGO_DB: "EARS"
 
   # ----- Zookeeper 3.5.5 -----
-  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper:2181,zookeeper-1.zookeeper:2181,zookeeper-2.zookeeper:2181"
+  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper.ears-base.svc.cluster.local:2181,zookeeper-1.zookeeper.ears-base.svc.cluster.local:2181,zookeeper-2.zookeeper.ears-base.svc.cluster.local:2181"
   MONITOR_ZK_ROOT_PATH: "/resource-monitor"
   MONITOR_ZK_SESSION_TIMEOUT: "30"
   # SASL 미사용 시 빈 값 (Secret이 빈 mechanism을 주입)
@@ -28,7 +28,8 @@ data:
   MONITOR_REDIS_KEY_PREFIX: "RESOURCE_ALERT"
   # (A) HA / Sentinel 모드 (운영 기본) — announce 파드 sentinel(26379) 목록 + master 그룹명.
   #     ⚠️ DB 는 URL 의 /N 이 아니라 MONITOR_REDIS_DB 로 지정한다(RMS 예약=5).
-  #     sentinel 인증이 데이터와 다르면 secret 의 MONITOR_REDIS_SENTINEL_PASSWORD 로 분리.
+  #     센티널에 requirepass 가 있으면 secret 의 MONITOR_REDIS_SENTINEL_PASSWORD 로 지정.
+  #     비우면 센티널엔 AUTH 미전송(데이터 비번으로 폴백 안 함 — sentinel.auth=false 대응).
   MONITOR_REDIS_SENTINELS: "mdb-redis-ha-announce-0.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-1.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-2.ears-base.svc.cluster.local:26379"
   MONITOR_REDIS_SENTINEL_MASTER: "mymaster"
   MONITOR_REDIS_DB: "5"
