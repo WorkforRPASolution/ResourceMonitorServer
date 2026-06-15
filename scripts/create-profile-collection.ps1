@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     RESOURCE_MONITOR_PROFILE 컬렉션을 (비어 있게) 생성한다.
 

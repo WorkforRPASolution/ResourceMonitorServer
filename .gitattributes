@@ -1,0 +1,21 @@
+# 줄바꿈 정규화 — Windows 에서 체크아웃해도 Linux 빌드서버에서 실행하는
+# 셸/도커 파일이 CRLF 로 깨지지 않도록 강제한다. (DOCKER_BUILD.md §3/§6 참고)
+
+# 기본: git 이 텍스트/바이너리를 자동 판별해 커밋 시 LF 로 정규화
+* text=auto
+
+# ─── 항상 LF (Linux 에서 실행/파싱) ───
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+.dockerignore text eol=lf
+Makefile      text eol=lf
+*.py          text eol=lf
+*.yaml        text eol=lf
+*.yml         text eol=lf
+# PowerShell 도 LF 로 통일(PowerShell 5.1/7 모두 LF 실행 정상, BOM 은 별개로 보존).
+*.ps1         text eol=lf
+
+# ─── 바이너리(정규화/diff 제외) ───
+*.tar         binary
+*.zip         binary
+*.png         binary

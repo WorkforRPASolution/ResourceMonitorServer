@@ -1,4 +1,4 @@
-#Requires -Version 5.0
+﻿#Requires -Version 5.0
 param(
     [string]$Proxy = "",
     [string]$Registry = "",

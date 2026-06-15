@@ -1,4 +1,4 @@
-#Requires -Version 5.0
+﻿#Requires -Version 5.0
 $ErrorActionPreference = "Stop"
 # ----------------------------------------------------------------------
 # build-package.ps1 - RMS 소스 패키징 (Windows PowerShell)
