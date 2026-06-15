@@ -122,6 +122,13 @@ https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi-all/si
 1. 매번 `--registry <정확한 URL>` (Windows: `-Registry`) 로 지정, 또는
 2. `scripts/build-image.sh` / `.ps1` 상단의 기본값(`DEFAULT_PIP_INDEX_URL` / `$DefaultPipIndexUrl`) 을 수정.
 
+> **⚠️ URL 은 반드시 `/simple/` 로 끝나야 한다(끝 슬래시 포함).** pip 은 PEP 503 *Simple
+> Repository API* 로 패키지를 찾으며, `--index-url` 뒤에 `/<패키지명>/` 을 붙여 파일 목록을
+> 읽는다. Nexus 에서 그 엔드포인트가 `.../repository/<repo>/simple/` 다(`.../repository/<repo>/`
+> 는 repo 루트일 뿐 pip 용 API 가 아니다). `/simple/` 을 빠뜨리면 pip 이 엉뚱한 경로를 쳐서
+> **모든 패키지가 `Could not find a version ... (from versions: none)`** 로 실패한다(§6 참고).
+> 스크립트 기본값은 이미 `/simple/` 로 끝나니, `--registry` 로 덮을 때 빠뜨리지 말 것.
+
 미러가 자체서명 인증서면 스크립트가 URL 호스트를 `pip --trusted-host` 로 자동 등록한다.
 
 ---
@@ -566,9 +573,28 @@ curl -s    localhost:8000/metrics | head   # Prometheus 텍스트
   빌드 자체가 불가 → gcc 불필요). 구버전 Dockerfile 을 쓰고 있다면 해당 `RUN apt-get ...`
   단계를 삭제하면 된다. 정말 소스 컴파일이 필요한 의존성이 새로 생기면, **사내 Debian(apt)
   미러**로 `sources` 를 교체하고 `gcc`+`python3-dev` 를 설치하도록 단계를 되살릴 것.
-- **미러에 패키지/버전 없음** — `pip ... could not find a version`. Nexus pypi proxy 가
-  대상 패키지(특히 바이너리 휠 `uvloop`/`hiredis`/`pymongo`/`aiohttp`/`watchfiles`/`httptools`)를
-  캐시하도록 한 번 인터넷 경유로 받아두거나, 정확한 미러 URL(simple 인덱스)인지 확인.
+- **`Could not find a version that satisfies ... (from versions: none)`** — pip 이 인덱스에서
+  패키지를 못 찾음. 원인을 순서대로 확인한다(실제로 자주 겪는 순서):
+  1. **URL 에 `/simple/` 누락** — pip 로그의 `Looking in indexes:` 줄을 보라. `.../repository/<repo>/`
+     처럼 `/simple/` 없이 끝나면 잘못된 것(§3 참고). `--registry .../repository/<repo>/simple/` 로 수정.
+  2. **프록시가 사내 Nexus 를 가로채 403** — `--proxy` 를 주면 http(s)_proxy 가 설정되는데,
+     사내 Nexus 는 프록시를 타면 안 된다(외부 프록시가 내부 호스트를 `403 Forbidden` 으로 거부).
+     **베이스 이미지는 오프라인 load, apt 는 제거된 지금, 빌드가 필요로 하는 네트워크는 사내
+     Nexus(내부망 직결)뿐이므로 보통 `--proxy` 를 빼고 `--registry` 만 주면 된다.** 꼭 필요하면
+     no_proxy 에 Nexus 호스트가 정확히 들어가야 한다. 빌드서버에서 누가 403 을 주는지 판별:
+     `curl -ksS --noproxy '*' -o /dev/null -w '%{http_code}\n' "<index>/simple/setuptools/"`
+     (이게 200 이면 범인은 프록시).
+  3. **Nexus 가 인증 요구** — 위 `--noproxy` 직접 호출도 `401/403` 이고 `WWW-Authenticate: ... Nexus`
+     가 보이면 익명 접근 비활성. `--registry https://USER:PASS@host/.../simple/` 또는 관리자에게
+     anonymous read 허용 요청.
+  4. **Nexus 가 해당 휠 미보유** — 위가 다 OK 인데 특정 패키지(특히 바이너리 휠
+     `uvloop`/`hiredis`/`pymongo`/`aiohttp`/`watchfiles`/`httptools`)만 none → repo 가 hosted
+     단독이거나 proxy 의 업스트림(pypi.org)이 막힌 것. **pypi proxy/group** repo 를 쓰고, proxy 면
+     한 번 인터넷 경유로 캐시되게 한다.
+- **`No matching distribution found for setuptools`** (RMS 본체 휠 빌드 중) — PEP 517 빌드 격리가
+  `setuptools` 를 인덱스에서 받으려다 실패. **현재 Dockerfile 은 `pip wheel --no-build-isolation`**
+  으로 베이스 이미지 번들 setuptools/wheel 을 써서 이 문제를 피한다. 구버전 Dockerfile 이면
+  해당 플래그를 추가하거나 Nexus 에 `setuptools`/`wheel`/`pip` 가 있는지 확인.
 - **태그 불일치** — 배포 노드의 이미지 태그가 `deployment.yaml` 의 `image:` 와 정확히
   같아야 한다. 스크립트는 `:{버전}` 과 `:latest` 둘 다 만들므로 기본 배포(`:latest`)는 그대로 동작.
 - **Apple Silicon 등에서 빌드** — 개발 PC 검증 빌드는 호스트 아키텍처(arm64)로 만들어진다.
