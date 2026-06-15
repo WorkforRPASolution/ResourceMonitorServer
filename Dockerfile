@@ -35,7 +35,10 @@ COPY src/ ./src/
 # Pinning ranges match pyproject.toml — kept explicit so this layer
 # does not invisibly drift past the version pins documented in plan v4.
 # ${VAR:+flag $VAR} → 인자가 비어 있으면 플래그 자체가 빠져 공용 pypi.org 로 동작.
-RUN pip wheel --no-deps --wheel-dir=/wheels \
+# --no-build-isolation: RMS 본체 휠은 베이스 이미지에 번들된 setuptools/wheel 로 빌드한다.
+# (빌드 격리를 켜면 PEP 517 이 build-system requires=setuptools 를 인덱스에서 새로 받으려다,
+#  폐쇄망 Nexus 에 setuptools 가 없으면 "No matching distribution found for setuptools" 로 실패.)
+RUN pip wheel --no-deps --no-build-isolation --wheel-dir=/wheels \
        ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} \
        ${PIP_TRUSTED_HOST:+--trusted-host $PIP_TRUSTED_HOST} \
        . \
