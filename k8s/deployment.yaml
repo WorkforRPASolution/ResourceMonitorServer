@@ -31,7 +31,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: monitoring
-          image: resource-monitor-server:latest
+          # 버전 핀 — pyproject.toml 의 version(=빌드 산출 태그)과 일치시킬 것. 릴리스마다 갱신.
+          # 빌드 스크립트는 :latest 를 만들지 않으므로 여기 태그가 load 한 이미지와 정확히 같아야 한다.
+          image: resource-monitor-server:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000

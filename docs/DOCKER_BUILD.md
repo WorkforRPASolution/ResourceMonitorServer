@@ -22,7 +22,7 @@ ResourceMonitorServer(RMS)를 **소스 패키징 → Docker 이미지 빌드 →
 [빌드 서버: Docker 있는 Windows 또는 Linux]
   scripts/build-image.{ps1,sh}
         │   docker build (사내 PyPI 미러서 의존성 wheel 빌드) → docker save
-        ▼   ResourceMonitorServer@{버전}.tar  (resource-monitor-server:{버전} + :latest)
+        ▼   ResourceMonitorServer@{버전}.tar  (resource-monitor-server:{버전})
         │   (tar 를 운영 노드에 전달)
         ▼
 [운영: K8s 노드]
@@ -108,8 +108,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1 -Public
 ```
 
 결과:
-- 이미지 `resource-monitor-server:{버전}` 과 `resource-monitor-server:latest` (두 태그).
-- `ResourceMonitorServer@{버전}.tar` (두 태그를 한 tar 에 저장).
+- 이미지 `resource-monitor-server:{버전}` (버전 태그 단독, `:latest` 없음).
+- `ResourceMonitorServer@{버전}.tar` (이 이미지를 tar 에 저장).
 
 ### 사내 PyPI 미러 URL — ⚠️ 확인 필요
 스크립트의 기본 미러 URL 은 WebManager 의 Nexus 호스트(`scpnexus.itplatform.samsungdisplay.net:8081`)에서 **유추한 값**이다:
@@ -145,15 +145,16 @@ kubectl apply -f k8s/        # configmap, deployment, service, pdb (.example 은
 kubectl get pods -l app=resource-monitor-server
 kubectl logs  -l app=resource-monitor-server
 ```
-- `k8s/deployment.yaml` 은 `resource-monitor-server:latest` + `imagePullPolicy: IfNotPresent` →
-  방금 load 한 로컬 이미지를 그대로 쓴다(레지스트리 불필요).
+- `k8s/deployment.yaml` 은 `resource-monitor-server:{버전}`(버전 핀) + `imagePullPolicy: IfNotPresent` →
+  방금 load 한 로컬 이미지를 그대로 쓴다(레지스트리 불필요). 빌드 스크립트는 **버전 태그 단독**으로만
+  이미지를 만드므로(`:latest` 없음), **`deployment.yaml` 의 image 태그를 빌드한 버전과 정확히 일치**시켜야 한다.
+- 새 버전 배포 시: `pyproject.toml` 의 version 을 올려 빌드 → `deployment.yaml` 의 `image:` 태그도 같은 버전으로 갱신.
 - 환경변수는 `k8s/configmap.yaml`(`secret.yaml.example` 참고해 secret 생성)로 주입 → **매니페스트 전문·환경변수 표는 §5**.
-- 버전 고정 롤아웃을 원하면 `deployment.yaml` 의 image 를 `:{버전}` 으로 바꿔도 된다(두 태그 모두 load 됨).
 
 **단일 서버(K8s 없이)**
 ```bash
 docker load -i ResourceMonitorServer@{버전}.tar
-docker run -d -p 8000:8000 --env-file .env resource-monitor-server:latest
+docker run -d -p 8000:8000 --env-file .env resource-monitor-server:{버전}
 ```
 
 헬스체크: `GET /healthz/live`(인프라 무관·항상 200), `GET /healthz/ready`(ES·Mongo·Redis·ZK + **Email API** 5종 ping; 하나라도 실패하면 503). probe 설정 전문은 §5.3.
@@ -308,7 +309,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: monitoring
-          image: resource-monitor-server:latest
+          # 버전 핀 — pyproject.toml 의 version(=빌드 산출 태그)과 일치시킬 것. 릴리스마다 갱신.
+          # 빌드 스크립트는 :latest 를 만들지 않으므로 여기 태그가 load 한 이미지와 정확히 같아야 한다.
+          image: resource-monitor-server:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -596,7 +599,8 @@ curl -s    localhost:8000/metrics | head   # Prometheus 텍스트
   으로 베이스 이미지 번들 setuptools/wheel 을 써서 이 문제를 피한다. 구버전 Dockerfile 이면
   해당 플래그를 추가하거나 Nexus 에 `setuptools`/`wheel`/`pip` 가 있는지 확인.
 - **태그 불일치** — 배포 노드의 이미지 태그가 `deployment.yaml` 의 `image:` 와 정확히
-  같아야 한다. 스크립트는 `:{버전}` 과 `:latest` 둘 다 만들므로 기본 배포(`:latest`)는 그대로 동작.
+  같아야 한다. 스크립트는 `:{버전}` 단일 태그만 만들므로(`:latest` 없음), `deployment.yaml` 의
+  `image:` 를 빌드한 버전과 정확히 일치시킬 것(불일치 시 `ImagePullBackOff`/`ErrImageNeverPull`).
 - **Apple Silicon 등에서 빌드** — 개발 PC 검증 빌드는 호스트 아키텍처(arm64)로 만들어진다.
   운영 노드가 x86_64 면 **운영과 같은 아키텍처의 빌드 서버**에서 만들 것(또는
   `docker build --platform linux/amd64`).

@@ -43,7 +43,7 @@ $ImageName = "resource-monitor-server"
 $ImageTag  = "${ImageName}:${Version}"
 $TarName   = "ResourceMonitorServer@${Version}.tar"
 
-Write-Host "[INFO] 이미지: $ImageTag (+ ${ImageName}:latest)" -ForegroundColor Blue
+Write-Host "[INFO] 이미지: $ImageTag" -ForegroundColor Blue
 Write-Host "[INFO] 출력: $TarName" -ForegroundColor Blue
 
 # --- build-arg 구성 ---
@@ -67,12 +67,11 @@ if ($Proxy) {
 Write-Host "[INFO] Docker 빌드 시작..." -ForegroundColor Blue
 docker build @BuildArgs --no-cache=true --tag $ImageTag .
 if ($LASTEXITCODE -ne 0) { throw "docker build 실패 (exit $LASTEXITCODE)" }
-docker tag $ImageTag "${ImageName}:latest"
-Write-Host "[OK] Docker 빌드 완료: $ImageTag (+ :latest)" -ForegroundColor Green
+Write-Host "[OK] Docker 빌드 완료: $ImageTag" -ForegroundColor Green
 
-# --- Docker Save (버전 + latest) ---
+# --- Docker Save (버전 태그 단독) ---
 Write-Host "[INFO] 이미지 저장 중... -> $TarName" -ForegroundColor Blue
-docker save -o $TarName $ImageTag "${ImageName}:latest"
+docker save -o $TarName $ImageTag
 if ($LASTEXITCODE -ne 0) { throw "docker save 실패 (exit $LASTEXITCODE)" }
 $Size = "{0:N1} MB" -f ((Get-Item $TarName).Length / 1MB)
 Write-Host "[OK] 저장 완료: $TarName ($Size)" -ForegroundColor Green
@@ -85,5 +84,5 @@ Write-Host " K8s 배포 (노드/마스터에서):" -ForegroundColor Green
 Write-Host "   1. docker load -i $TarName" -ForegroundColor Green
 Write-Host "   2. kubectl apply -f k8s/" -ForegroundColor Green
 Write-Host " 단일 서버 실행:" -ForegroundColor Green
-Write-Host "   docker run -d -p 8000:8000 --env-file .env ${ImageName}:latest" -ForegroundColor Green
+Write-Host "   docker run -d -p 8000:8000 --env-file .env $ImageTag" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green

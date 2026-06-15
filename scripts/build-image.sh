@@ -5,7 +5,7 @@ set -e
 #
 #   패키징(zip)을 푼 RMS 루트에서 실행한다.
 #   사내 PyPI 미러(Nexus)에서 의존성을 받아 멀티스테이지 빌드 →
-#   resource-monitor-server:{버전} (+ :latest) 이미지 생성 →
+#   resource-monitor-server:{버전} 이미지 생성 →
 #   docker save 로 ResourceMonitorServer@{버전}.tar 저장(레지스트리 불필요).
 #
 #   사용법:
@@ -67,7 +67,7 @@ IMAGE_NAME="resource-monitor-server"
 IMAGE_TAG="${IMAGE_NAME}:${VERSION}"
 TAR_NAME="ResourceMonitorServer@${VERSION}.tar"
 
-log "이미지: ${IMAGE_TAG} (+ ${IMAGE_NAME}:latest)"
+log "이미지: ${IMAGE_TAG}"
 log "출력: ${TAR_NAME}"
 
 # ─── build-arg 구성 ───
@@ -92,12 +92,11 @@ fi
 # ─── Docker Build ───
 log "Docker 빌드 시작..."
 docker build "${BUILD_ARGS[@]}" --no-cache=true --tag "${IMAGE_TAG}" .
-docker tag "${IMAGE_TAG}" "${IMAGE_NAME}:latest"
-ok "Docker 빌드 완료: ${IMAGE_TAG} (+ :latest)"
+ok "Docker 빌드 완료: ${IMAGE_TAG}"
 
-# ─── Docker Save (버전 + latest 두 태그 한 tar 에) ───
+# ─── Docker Save (버전 태그 단독) ───
 log "이미지 저장 중... → ${TAR_NAME}"
-docker save -o "${TAR_NAME}" "${IMAGE_TAG}" "${IMAGE_NAME}:latest"
+docker save -o "${TAR_NAME}" "${IMAGE_TAG}"
 SIZE=$(du -h "${TAR_NAME}" | cut -f1)
 ok "저장 완료: ${TAR_NAME} (${SIZE})"
 
@@ -109,5 +108,5 @@ echo -e "${GREEN} K8s 배포 (노드/마스터에서):${NC}"
 echo -e "${GREEN}   1. docker load -i ${TAR_NAME}${NC}"
 echo -e "${GREEN}   2. kubectl apply -f k8s/${NC}"
 echo -e "${GREEN} 단일 서버 실행:${NC}"
-echo -e "${GREEN}   docker run -d -p 8000:8000 --env-file .env ${IMAGE_NAME}:latest${NC}"
+echo -e "${GREEN}   docker run -d -p 8000:8000 --env-file .env ${IMAGE_TAG}${NC}"
 echo -e "${GREEN}========================================${NC}"
