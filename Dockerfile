@@ -12,7 +12,7 @@ WORKDIR /build
 # 모두 비어 있으면 공용 인터넷 + pypi.org 로 빌드된다(개발 PC 기본값).
 #   PIP_INDEX_URL    : 사내 PyPI 미러(Nexus) simple 인덱스 URL
 #   PIP_TRUSTED_HOST : 그 미러 호스트(자체서명 인증서 대응 = pip --trusted-host)
-#   HTTP(S)_PROXY    : 사내 프록시 (apt-get gcc + pip 다운로드 둘 다 경유)
+#   HTTP(S)_PROXY    : 사내 프록시 (pip 다운로드 경유)
 #   NO_PROXY         : 프록시를 거치지 않을 호스트(보통 사내 미러 호스트)
 # ──────────────────────────────────────────────────────────────────────
 ARG HTTP_PROXY=""
@@ -23,11 +23,11 @@ ARG PIP_TRUSTED_HOST=""
 ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY} no_proxy=${NO_PROXY} \
     HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY}
 
-# Build deps for hiredis, kazoo (if it pulls native bits), etc.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc \
-    && rm -rf /var/lib/apt/lists/*
-
+# 컴파일러/apt 불필요: 런타임 의존성은 전부 manylinux 바이너리 휠(cp311)로 설치된다
+# (uvloop/httptools/websockets/watchfiles/aiohttp/pymongo/hiredis 포함). slim 이미지엔
+# python3-dev 헤더도 없어 어차피 소스 빌드가 불가하므로 gcc 설치(apt)는 무의미하고,
+# 폐쇄망 프록시가 deb.debian.org 를 403 으로 막으면 빌드만 깨뜨린다. 향후 소스 빌드가
+# 필요한 의존성이 생기면 사내 Debian 미러로 apt 를 돌릴 것. (DOCKER_BUILD.md §6)
 COPY pyproject.toml ./
 COPY src/ ./src/
 

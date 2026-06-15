@@ -551,11 +551,24 @@ curl -s    localhost:8000/metrics | head   # Prometheus 텍스트
   근본 차단은 repo 에 `.gitattributes`(`*.sh text eol=lf`, `Dockerfile text eol=lf`)를 두는 것.
 - **`Permission denied` (`./scripts/build-image.sh`)** — zip 이 실행권한을 잃었다.
   `chmod +x scripts/*.sh` 후 재실행하거나 `bash scripts/build-image.sh` 로 실행.
-- **`apt-get`(gcc) 실패** — builder 단계가 `gcc` 를 설치한다. 폐쇄망에서 데비안 mirror 가
-  안 닿으면 `--proxy` 로 인터넷 게이트웨이를 거치게 한다. (대부분의 의존성은 manylinux
-  바이너리 휠이라 실제 컴파일은 거의 없지만, gcc 설치 단계 자체는 네트워크가 필요하다.)
+- **`[builder 1/N] FROM python:3.11-slim` 에서 멈춤** — 첫 단계는 베이스 이미지를
+  **Docker Hub(`docker.io`)** 에서 받는 단계다. 폐쇄망이면 여기서 hang 된다. ⚠️ 주의:
+  `--proxy`(build-arg)는 **컨테이너 안 RUN(apt·pip)** 에만 적용되고, `FROM` 의 베이스
+  이미지 pull 은 **Docker 데몬**이 하므로 영향을 주지 않는다. 해결:
+  ① (권장·오프라인) 인터넷 PC 에서 `docker pull python:3.11-slim && docker save python:3.11-slim -o python-3.11-slim.tar`
+  → 빌드서버로 옮겨 `docker load -i python-3.11-slim.tar`, 그 후 `DOCKER_BUILDKIT=0 ./scripts/build-image.sh`
+  (BuildKit 이 로컬 이미지를 두고도 레지스트리 메타데이터를 조회해 멈추면 레거시 빌더로 강제).
+  ② 데몬 프록시: `/etc/systemd/system/docker.service.d/http-proxy.conf` 에 `HTTP(S)_PROXY` 설정 후 `systemctl daemon-reload && systemctl restart docker`.
+  ③ 사내 Docker 레지스트리 미러(`/etc/docker/daemon.json` 의 `registry-mirrors`) 또는 `FROM <사내레지스트리>/python:3.11-slim` 로 변경.
+- **`[builder N/M] RUN apt-get update` 가 `403 Forbidden [deb.debian.org]`** — 사내 프록시가
+  공개 Debian 저장소를 막은 것. **현재 Dockerfile 은 apt/gcc 단계를 쓰지 않는다**(런타임
+  의존성이 전부 cp311 manylinux 바이너리 휠 + slim 이미지엔 `python3-dev` 헤더도 없어 소스
+  빌드 자체가 불가 → gcc 불필요). 구버전 Dockerfile 을 쓰고 있다면 해당 `RUN apt-get ...`
+  단계를 삭제하면 된다. 정말 소스 컴파일이 필요한 의존성이 새로 생기면, **사내 Debian(apt)
+  미러**로 `sources` 를 교체하고 `gcc`+`python3-dev` 를 설치하도록 단계를 되살릴 것.
 - **미러에 패키지/버전 없음** — `pip ... could not find a version`. Nexus pypi proxy 가
-  대상 패키지를 캐시하도록 한 번 인터넷 경유로 받아두거나, 정확한 미러 URL 인지 확인.
+  대상 패키지(특히 바이너리 휠 `uvloop`/`hiredis`/`pymongo`/`aiohttp`/`watchfiles`/`httptools`)를
+  캐시하도록 한 번 인터넷 경유로 받아두거나, 정확한 미러 URL(simple 인덱스)인지 확인.
 - **태그 불일치** — 배포 노드의 이미지 태그가 `deployment.yaml` 의 `image:` 와 정확히
   같아야 한다. 스크립트는 `:{버전}` 과 `:latest` 둘 다 만들므로 기본 배포(`:latest`)는 그대로 동작.
 - **Apple Silicon 등에서 빌드** — 개발 PC 검증 빌드는 호스트 아키텍처(arm64)로 만들어진다.
