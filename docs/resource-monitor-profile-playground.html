@@ -147,7 +147,7 @@
   <h1>🖥️ 설비 모니터링 설정 가이드 &amp; Playground</h1>
   <p>코딩을 몰라도 괜찮습니다. 아래 4단계를 채우면 우측에 실제 모니터링 설정(<span class="mono">RESOURCE_MONITOR_PROFILE</span>)이 자동으로 만들어집니다.</p>
   <div class="flow">
-    <div class="node">1 <b>누구에게</b> (scope)</div>
+    <div class="node">1 <b>어디까지</b> (scope)</div>
     <span class="arrow">→</span>
     <div class="node">2 <b>무엇을 잰다</b> (measures)</div>
     <span class="arrow">→</span>
@@ -173,10 +173,10 @@
     <div class="card" data-step="scope">
       <div class="card-head">
         <div class="step-badge">1</div>
-        <h2>누구에게 적용할까요? <span class="mono" style="font-size:12px;color:var(--muted)">scope</span></h2>
+        <h2>어디까지 적용할까요? <span class="mono" style="font-size:12px;color:var(--muted)">scope</span></h2>
       </div>
       <div class="analogy">
-        🎯 <b>"누구에게"</b> — 이 설정을 <b>어느 장비</b>에 적용할지 정합니다.
+        🎯 <b>"어디까지"</b> — 이 설정을 <b>어느 범위의 장비</b>에 적용할지 정합니다.
         병원에서 "전체 환자" 또는 "특정 환자 1명"에게 처방하듯,
         <span class="tag">*</span> 는 <b>전체</b>를 뜻합니다. 잘 모르겠으면 그대로 두세요(전체 장비 적용).
       </div>
@@ -195,6 +195,13 @@
         </div>
       </div>
       <div class="hint">예) 특정 설비만: 공정 <span class="mono">PHOTO</span>, 설비 <span class="mono">EQP001</span>. 전체 적용은 모두 <span class="mono">*</span>.</div>
+      <div class="field" style="margin-top:6px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text);">
+          <input type="checkbox" id="profile-enabled" checked style="width:auto; margin:0;">
+          이 설정 사용 (enabled)
+        </label>
+        <div class="hint">이 문서 전체 스위치. <b>끄면 이 문서가 직접 가진 규칙만</b> 꺼집니다(다른 범위에서 상속받은 규칙은 그 규칙을 선언한 범위가 켜져 있으면 계속 동작 — 규칙 단위 판정).</div>
+      </div>
     </div>
 
     <!-- STEP 2 : measures -->
@@ -242,6 +249,7 @@
         <button class="btn-add" id="add-fact">＋ 값 추가</button>
         <div class="hint">최댓값(max)·최솟값(min)·평균(avg)·상위값(p95)·급증횟수(spike_count) 중 선택.</div>
       </div>
+      <div class="hint" style="margin-top:8px;">고급 옵션(<span class="mono">expand/group_by/metric_kind</span>·<span class="mono">p50/trend/delta</span> 등)은 이 도구 범위 밖입니다(전체 스키마는 가이드 참고). metric에 <span class="mono">*</span>를 쓰면 서버가 인스턴스별로 자동 전개합니다(<span class="mono">expand=instance</span>).</div>
     </div>
 
     <!-- STEP 3 : rules -->
@@ -326,6 +334,11 @@
         </div>
       </div>
       <div class="field">
+        <label>이메일 서브코드 (email_subcode) <span style="color:var(--muted);font-weight:400;">— 선택</span></label>
+        <input type="text" id="notify-emailsubcode" placeholder="비우면 자동: {카테고리}_{심각도}">
+        <div class="hint">비우면 서버가 <code>{CATEGORY}_{SEVERITY}</code>로 자동 생성합니다(예 <code>CPU_WARNING</code>). 특정 서브코드를 강제할 때만 입력.</div>
+      </div>
+      <div class="field">
         <label>발송 단위 (group_by)</label>
         <select id="notify-groupby">
           <option value="eqp">eqp — 장비별로 1통 (기본)</option>
@@ -397,12 +410,13 @@ const CATEGORIES = {
 let state = {};
 function defaultState(){
   return {
+    enabled:true,
     scope:{ process:"*", eqpModel:"*", eqpId:"*" },
     measure:{ id:"cpu", category:"cpu", metric:"total_used_pct", proc:"@system", window_minutes:15,
               facts:[ {type:"max", over:90, direction:"above"} ] },
     rule:{ id:"cpu_warn", interval_minutes:5, severity:"WARNING", combine:"AND",
-           when:[ {fact:"cpu.max", op:">=", value:80} ], notify:"default", enabled:true },
-    notify:{ cooldown_minutes:30, email_code:"RESOURCE_MONITOR", group_by:"eqp", email_group:"" },
+           when:[ {fact:"cpu.max", op:">=", value:80, quantifier:"any", count_min:null} ], notify:"default", enabled:true },
+    notify:{ cooldown_minutes:30, email_code:"RESOURCE_MONITOR", email_subcode:"", group_by:"eqp", email_group:"" },
   };
 }
 
@@ -453,6 +467,7 @@ function bindStaticInputs(){
     ['rule-notify',   v=>state.rule.notify=v],
     ['notify-cooldown',v=>state.notify.cooldown_minutes=numOr(v,0)],
     ['notify-emailcode',v=>state.notify.email_code=v],
+    ['notify-emailsubcode',v=>state.notify.email_subcode=v],
   ];
   map.forEach(([id,fn])=>{
     const el=document.getElementById(id);
@@ -463,6 +478,11 @@ function bindStaticInputs(){
   document.getElementById('measure-category').addEventListener('change', e=>{
     state.measure.category=e.target.value;
     refreshMetricList();
+    updateOutput();
+  });
+  // 프로파일 전체 enabled 체크박스
+  document.getElementById('profile-enabled').addEventListener('change', e=>{
+    state.enabled = e.target.checked;
     updateOutput();
   });
   // rule enabled 체크박스 (checkbox라 .checked 별도 처리)
@@ -487,7 +507,7 @@ function bindButtons(){
   });
   document.getElementById('add-when').addEventListener('click', ()=>{
     const opts = factHandles();
-    state.rule.when.push({fact:opts[0]||"", op:">=", value:0});
+    state.rule.when.push({fact:opts[0]||"", op:">=", value:0, quantifier:"any", count_min:null});
     renderWhen(); updateOutput();
   });
   document.getElementById('notify-egroup').addEventListener('input', e=>{
@@ -516,6 +536,7 @@ function syncFormFromState(){
   document.getElementById('scope-process').value = state.scope.process;
   document.getElementById('scope-model').value   = state.scope.eqpModel;
   document.getElementById('scope-eqpid').value   = state.scope.eqpId;
+  document.getElementById('profile-enabled').checked = state.enabled !== false;
   document.getElementById('measure-id').value    = state.measure.id;
   document.getElementById('measure-category').value = state.measure.category;
   document.getElementById('measure-metric').value = state.measure.metric;
@@ -529,6 +550,7 @@ function syncFormFromState(){
   document.getElementById('rule-enabled').checked = state.rule.enabled !== false;
   document.getElementById('notify-cooldown').value = state.notify.cooldown_minutes;
   document.getElementById('notify-emailcode').value= state.notify.email_code;
+  document.getElementById('notify-emailsubcode').value = state.notify.email_subcode || "";
   document.getElementById('notify-groupby').value  = state.notify.group_by || "eqp";
 }
 
@@ -610,16 +632,24 @@ function renderWhen(){
   wrap.innerHTML = '';
   const handles = factHandles();
   state.rule.when.forEach((w, i)=>{
+    const q = w.quantifier || "any";
     const div = document.createElement('div');
     div.className='list-item'; div.dataset.whenRow=i;
     const factOpts = handles.map(h=>`<option value="${h}" ${h===w.fact?'selected':''}>${h}</option>`).join('')
         + (handles.includes(w.fact)?'':`<option value="${w.fact}" selected>${w.fact||'(선택)'}</option>`);
     const opOpts = ALL_OPS.map(o=>`<option value="${o}" ${o===w.op?'selected':''}>${o}</option>`).join('');
+    const qOpts = [['any','하나라도(any)'],['all','전부(all)'],['count','N개 이상(count)']]
+        .map(([v,l])=>`<option value="${v}" ${v===q?'selected':''}>${l}</option>`).join('');
+    const countCell = q==='count' ? `
+        <div class="field" style="margin:0;">
+          <label>최소 개수 (count_min)</label>
+          <input type="number" class="when-countmin" min="1" value="${w.count_min!=null?w.count_min:1}">
+        </div>` : '';
     div.innerHTML = `
       <div class="li-title">조건 #${i+1}
         ${state.rule.when.length>1?'<button class="del" data-del-when="'+i+'">삭제</button>':''}
       </div>
-      <div class="li-grid" style="grid-template-columns:2fr 0.9fr 1.1fr;">
+      <div class="li-grid" style="grid-template-columns:2fr 0.8fr 1fr 1.1fr${q==='count'?' 0.9fr':''};">
         <div class="field" style="margin:0;">
           <label>측정값 (fact)</label>
           <select class="when-fact">${factOpts}</select>
@@ -632,6 +662,11 @@ function renderWhen(){
           <label>기준값 (value)</label>
           <input type="number" class="when-value" value="${w.value}" step="any">
         </div>
+        <div class="field" style="margin:0;">
+          <label>충족 대상 (quantifier)</label>
+          <select class="when-quant">${qOpts}</select>
+        </div>
+        ${countCell}
       </div>`;
     wrap.appendChild(div);
   });
@@ -646,6 +681,19 @@ function renderWhen(){
   wrap.querySelectorAll('.when-value').forEach(inp=>{
     const i = +inp.closest('[data-when-row]').dataset.whenRow;
     inp.addEventListener('input', e=>{ state.rule.when[i].value=numOr(e.target.value,0); updateOutput(); });
+  });
+  wrap.querySelectorAll('.when-quant').forEach(sel=>{
+    const i = +sel.closest('[data-when-row]').dataset.whenRow;
+    sel.addEventListener('change', e=>{
+      state.rule.when[i].quantifier = e.target.value;
+      if(e.target.value === 'count' && (state.rule.when[i].count_min==null || state.rule.when[i].count_min<1))
+        state.rule.when[i].count_min = 1;        // count는 count_min≥1 필수(§5)
+      renderWhen(); updateOutput();              // count_min 칸 표시/숨김 위해 재렌더
+    });
+  });
+  wrap.querySelectorAll('.when-countmin').forEach(inp=>{
+    const i = +inp.closest('[data-when-row]').dataset.whenRow;
+    inp.addEventListener('input', e=>{ state.rule.when[i].count_min=numOr(e.target.value,1); updateOutput(); });
   });
   wrap.querySelectorAll('[data-del-when]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -676,7 +724,15 @@ function buildProfile(){
     return { type:f.type };
   });
   const r = state.rule;
-  const when = r.when.map(w=>({ fact:w.fact, op:w.op, value:w.value }));
+  const when = r.when.map(w=>{
+    const c = { fact:w.fact, op:w.op, value:w.value };
+    const q = w.quantifier || "any";
+    if(q !== "any"){
+      c.quantifier = q;                                   // 기본 any는 생략
+      if(q === "count") c.count_min = (w.count_min!=null ? w.count_min : 1);
+    }
+    return c;
+  });
   const rule = { id:r.id, interval_minutes:r.interval_minutes, severity:r.severity };
   if(when.length>1) rule.combine = r.combine;
   rule.when = when;
@@ -684,6 +740,8 @@ function buildProfile(){
   if(r.enabled === false) rule.enabled = false;  // 기본 true는 생략, 끈 경우만 표기
 
   const channel = { cooldown_minutes:state.notify.cooldown_minutes, email_code:state.notify.email_code };
+  const esub = (state.notify.email_subcode||"").trim();
+  if(esub) channel.email_subcode = esub;        // 비우면 생략 → 서버가 {CATEGORY}_{SEVERITY} 자동
   if(state.notify.group_by && state.notify.group_by !== "eqp"){
     channel.group_by = state.notify.group_by;  // 기본 eqp는 생략
     const eg = (state.notify.email_group||"").trim();
@@ -692,7 +750,7 @@ function buildProfile(){
 
   return {
     scope:{ process:state.scope.process, eqpModel:state.scope.eqpModel, eqpId:state.scope.eqpId },
-    enabled:true,
+    enabled: state.enabled !== false,
     measures:[ { id:m.id, category:m.category, metric:m.metric, proc:m.proc, window_minutes:m.window_minutes, facts } ],
     rules:[ rule ],
     notify:{ default: channel },
@@ -736,6 +794,10 @@ function validate(p){
       const allowed = (FACT_TYPES[type]||{}).ops||[];
       if(w.op && !allowed.includes(w.op)){
         err("§5.5", `'${mid}.${type}'에는 비교 연산자 '${w.op}'를 쓸 수 없습니다. 가능한 연산자: ${allowed.join(", ")}.`);
+      }
+      // §5.1 quantifier='count'면 count_min ≥ 1 필수
+      if(w.quantifier === "count" && (w.count_min==null || w.count_min < 1)){
+        err("§5.1", `규칙 '${r.id}'의 조건이 'N개 이상(count)'이면 최소 개수(count_min)를 1 이상으로 넣어야 합니다.`);
       }
     }
     // §5.6 interval ≤ window
@@ -812,8 +874,9 @@ function fallbackCopy(text, done){
 
 // ── 테스트 훅(UI 무관) — SCHEMA §5 검증 3-way 대조 러너가 사용 ──────────────
 // 임의 프로파일 JSON을 받아 검증 결과를 머신 판독 형태로 반환.
-// 주의: playground는 measures[0](단일 measure)만 보고, last/p50/p90/p99·quantifier
-// count_min·spike param 누락은 검증하지 않음 → 그런 케이스는 러너에서 GAP으로 분류.
+// 주의: playground는 measures[0](단일 measure)·Phase 1 fact(max/min/avg/p95/spike_count)만
+// 다룹니다. quantifier/count_min은 지원하지만 last/p50/p90/p99 등은 미지원 → 그런 케이스는
+// 러너에서 GAP으로 분류.
 window.__rmp = {
   validateCase(profile){
     const { errors, codes } = validate(profile);

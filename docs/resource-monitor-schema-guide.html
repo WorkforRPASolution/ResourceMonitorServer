@@ -153,7 +153,7 @@
 <nav class="toc">
   <p class="toc-title">목차</p>
   <a href="#s1"><span class="n">1</span>큰 그림: 4계층</a>
-  <a href="#s2"><span class="n">2</span>scope — 누구에게</a>
+  <a href="#s2"><span class="n">2</span>scope — 어디까지</a>
   <a href="#s3"><span class="n">3</span>measures — 잰다</a>
   <a href="#s4"><span class="n">4</span>fact 카탈로그(16종)</a>
   <a href="#s5"><span class="n">5</span>fact 조건부 파라미터</a>
@@ -189,7 +189,7 @@
   <table>
     <thead><tr><th>계층</th><th>역할</th><th>비유</th><th>주요 내용</th></tr></thead>
     <tbody>
-      <tr><td><code>scope</code></td><td>이 설정을 <b>어느 장비에</b> 적용할지</td><td>🎯 누구에게</td><td>process / eqpModel / eqpId</td></tr>
+      <tr><td><code>scope</code></td><td>이 설정을 <b>어느 장비에</b> 적용할지</td><td>🎯 어디까지</td><td>process / eqpModel / eqpId</td></tr>
       <tr><td><code>measures[]</code></td><td><b>무엇을 어떻게 잴지</b> (집계 → fact 산출)</td><td>🌡️ 잰다</td><td>category·metric·window + facts</td></tr>
       <tr><td><code>rules[]</code></td><td>잰 값으로 <b>언제 경보할지</b> (조건 + 평가 주기)</td><td>🚨 판단한다</td><td>when 조건 + interval + severity</td></tr>
       <tr><td><code>notify{}</code></td><td><b>어떻게 알릴지</b> (이메일·억제)</td><td>📧 알린다</td><td>cooldown + email 코드</td></tr>
@@ -211,7 +211,7 @@
   <h3>한 문서의 뼈대</h3>
 <pre><span class="tok-com">// RESOURCE_MONITOR_PROFILE 문서 1개</span>
 {
-  <span class="tok-key">"scope"</span>:    { <span class="tok-key">"process"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpModel"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> },  <span class="tok-com">// 누구에게</span>
+  <span class="tok-key">"scope"</span>:    { <span class="tok-key">"process"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpModel"</span>: <span class="tok-str">"*"</span>, <span class="tok-key">"eqpId"</span>: <span class="tok-str">"*"</span> },  <span class="tok-com">// 어디까지</span>
   <span class="tok-key">"enabled"</span>:  <span class="tok-bool">true</span>,                                              <span class="tok-com">// 켜고 끄기</span>
   <span class="tok-key">"governance"</span>: { <span class="tok-key">"version"</span>: <span class="tok-num">1</span>, <span class="tok-key">"updated_by"</span>: <span class="tok-str">"..."</span> },        <span class="tok-com">// 변경 이력/낙관락</span>
   <span class="tok-key">"measures"</span>: [ <span class="tok-com">/* 잰다: 무엇을·어떻게 → fact 산출 */</span> ],
@@ -225,7 +225,7 @@
 <!-- ================= §2 scope ================= -->
 <section id="s2">
   <h2><span class="sec-no">§2</span> scope — 어느 장비에 적용할까 <span class="sec-sub">SCHEMA §1.2</span></h2>
-  <p class="analogy">🎯 <b>누구에게</b> — 이 설정이 적용될 장비 범위를 정합니다. <code>EQP_INFO</code>(장비 마스터)의 계층을 그대로 따릅니다. 넓은 범위(전체)부터 좁은 범위(특정 장비 1대)까지 3단계입니다.</p>
+  <p class="analogy">🎯 <b>어디까지</b> — 이 설정이 적용될 장비 범위를 정합니다. <code>EQP_INFO</code>(장비 마스터)의 계층을 그대로 따릅니다. 넓은 범위(전체)부터 좁은 범위(특정 장비 1대)까지 3단계입니다.</p>
 
   <table>
     <thead><tr><th>경로</th><th>타입</th><th class="c">필수</th><th class="c">기본</th><th>의미</th></tr></thead>
