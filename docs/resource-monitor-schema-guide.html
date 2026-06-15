@@ -218,7 +218,7 @@
   <span class="tok-key">"rules"</span>:    [ <span class="tok-com">/* 판단: fact로 경보 결정 + 평가 주기 */</span> ],
   <span class="tok-key">"notify"</span>:   { <span class="tok-com">/* 알린다: 전달 채널 */</span> }
 }</pre>
-  <p><code>enabled</code> 는 이 설정 전체를 켜고 끄는 스위치(기본 <code>true</code>)이고, <code>governance</code> 는 누가 언제 왜 바꿨는지(<code>version</code>·<code>updated_by</code>·<code>updated_at</code>·<code>change_reason</code>)를 담는 변경 이력입니다. <code>version</code> 은 동시 수정 충돌을 막는 낙관적 잠금 토큰으로도 쓰입니다. (이 문서 전체 스위치와 별개로, <b>rule 하나만</b> 끄는 <code>rule.enabled</code>도 있습니다 — <a href="#s6">§6 예시 ⑨</a>.) cascade 합성 시 <code>enabled</code>는 다른 필드와 똑같이 <b>더 구체적인 scope 문서의 값이 이깁니다</b> — §6 합성 규칙 표 참고.</p>
+  <p><code>enabled</code> 는 이 설정 전체를 켜고 끄는 스위치(기본 <code>true</code>)이고, <code>governance</code> 는 누가 언제 왜 바꿨는지(<code>version</code>·<code>updated_by</code>·<code>updated_at</code>·<code>change_reason</code>)를 담는 변경 이력입니다. <code>version</code> 은 동시 수정 충돌을 막는 낙관적 잠금 토큰으로도 쓰입니다. (이 문서 전체 스위치와 별개로, <b>rule 하나만</b> 끄는 <code>rule.enabled</code>도 있습니다 — <a href="#s6">§6 예시 ⑨</a>.) cascade 합성 시 <code>enabled</code>는 <b>규칙 단위로 판정</b>됩니다 — 각 규칙은 (그 규칙을 가진 가장 구체적 scope 문서의 <code>scope.enabled</code>) AND (<code>rule.enabled</code>)로 동작하며, 광역 문서의 <code>enabled:false</code>는 그 문서가 직접 가진 규칙만 끕니다(상속 규칙은 그 규칙의 선언 scope가 지배) — §6 합성 규칙 표 참고.</p>
   <div class="note"><span class="tag">DB 위치</span> 모든 컬렉션은 단일 <code>EARS</code> MongoDB에 공존합니다. RMS는 <code>RESOURCE_MONITOR_PROFILE</code> 만 소유(읽기·쓰기)하고 <code>EQP_INFO</code> 등은 read-only로 참조합니다.</div>
 </section>
 
@@ -694,11 +694,11 @@
       <tr><td><code>measures</code></td><td><code>measure.id</code></td><td>구체 문서의 measure가 <b>통째로 교체</b></td></tr>
       <tr><td><code>rules</code></td><td><code>rule.id</code></td><td>구체 문서의 rule이 <b>통째로 교체</b></td></tr>
       <tr><td><code>notify</code></td><td>맵 이름</td><td>구체 문서의 채널이 <b>통째로 교체</b></td></tr>
-      <tr><td><code>enabled</code></td><td>—</td><td>구체 문서의 값이 <b>통째로 이김</b>(다른 필드와 동일)</td></tr>
+      <tr><td><code>enabled</code></td><td>(rule별)</td><td><b>규칙 단위 판정</b> — 아래 주의 참조</td></tr>
     </tbody>
   </table>
   <p>같은 key가 양쪽에 있으면 <b>구체 문서가 통째로 이깁니다</b>(필드 단위 부분 병합 없음 — 결정적·예측가능). 구체 문서에만 있는 key는 추가됩니다.</p>
-  <div class="note"><span class="tag">주의</span> <code>enabled</code>도 같은 규칙입니다 — 조상 문서가 <code>false</code>여도 더 구체적인 문서가 <code>true</code>면 그 scope는 켜집니다. 따라서 광역 scope의 <code>enabled:false</code>는 <b>자기 overlay 문서가 없는 장비만</b> 끕니다. overlay가 있는 장비는 그 문서의 <code>enabled</code>(기본 <code>true</code>)가 우선이므로, 그 장비까지 끄려면 해당 overlay도 <code>enabled:false</code>로 바꿔야 합니다.</div>
+  <div class="note"><span class="tag">주의</span> <code>enabled</code>는 <b>규칙(rule) 단위</b>로 판정합니다 — 각 규칙의 유효 활성 = (그 규칙을 가진 <b>가장 구체적인</b> scope 문서의 <code>scope.enabled</code>) AND (그 문서에서의 <code>rule.enabled</code>). 규칙은 <code>id</code>로 병합되므로 가장 구체적인 선언자가 규칙과 유효 enabled를 함께 결정합니다. 따라서 <b>비활성(<code>enabled:false</code>) 문서에만 있는 규칙은 켜진 하위 overlay가 상속해도 꺼진 채로</b> 남습니다(광역 <code>enabled:false</code>는 그 문서가 직접 가진 규칙만 끔). 상속 규칙을 특정 scope에서 끄려면 같은 id로 <code>rule.enabled:false</code> 재선언(소프트 tombstone). folded <code>profile.enabled</code>는 "활성 규칙이 하나라도 있는가"입니다. 결정 근거: <code>docs/rms-enabled-rulelevel-decision-2026-06-15.md</code>.</div>
 
   <h3>sparse overlay 예시 — EQP001만 CPU 임계 95→85</h3>
 <pre><span class="tok-com">// (*,*,*) 전역 문서는 그대로 두고, 아래 문서만 추가</span>

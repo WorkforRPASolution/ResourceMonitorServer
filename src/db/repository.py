@@ -251,19 +251,20 @@ class ProfileRepository:
         per-equipment effective profile at run time, so thresholds/overrides
         still apply correctly; this method only decides the job cadence.
 
-        Doc-level ``enabled`` is deliberately NOT filtered: ``enabled`` folds
-        most-specific-wins, so an enabled overlay can inherit rules that live
-        only in a disabled ancestor doc — dropping that doc here would drop its
-        intervals and silently lose breaches. A fully-disabled subtree still
-        gets jobs; the engine skips its equipment per tick (cheap no-op).
-        Within a doc only ``enabled`` rules count (a disabled rule needs no
-        job — the engine skips it anyway); rules predating the ``enabled``
-        field are treated as enabled. The runtime engine still re-checks
-        ``profile.enabled`` and each ``rule.enabled`` per equipment.
+        Doc-level ``enabled:false`` docs are excluded (``enabled: {$ne: False}``;
+        legacy docs without the field are kept): under per-rule v3 semantics a
+        rule that lives only in a disabled doc never runs (it stays off even when
+        inherited), so it needs no job. If an enabled overlay re-declares such a
+        rule by id, that interval is collected from the *overlay* doc instead —
+        no breach is lost. Within a doc only ``enabled`` rules count (a disabled
+        rule needs no job); rules predating the ``enabled`` field are treated as
+        enabled. The runtime engine still re-checks each ``rule.enabled`` per
+        equipment (over-scheduling is a cheap no-op tick).
+        See docs/rms-enabled-rulelevel-decision-2026-06-15.md.
         """
         try:
             cursor = self._collection.find(
-                {"scope.process": {"$in": [process, "*"]}},
+                {"scope.process": {"$in": [process, "*"]}, "enabled": {"$ne": False}},
                 {"_id": 0, "rules.interval_minutes": 1, "rules.enabled": 1},
             )
             docs = await cursor.to_list(None)

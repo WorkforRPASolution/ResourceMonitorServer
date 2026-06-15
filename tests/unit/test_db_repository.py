@@ -189,16 +189,17 @@ class TestGetSchedulingIntervals:
     """reload()의 잡 cadence 출처. resolve_profile(p,*,*)와 달리 model/eqp 단독
     overlay까지 포함해 잡이 등록되도록 보장한다."""
 
-    async def test_filter_includes_globals_without_doc_enabled_filter(self, mock_collection):
+    async def test_filter_excludes_disabled_docs(self, mock_collection):
         mock_collection.find = MagicMock(return_value=_cursor([]))
         repo = ProfileRepository(mock_collection)
         await repo.get_scheduling_intervals("CVD")
-        # 글로벌(*)까지 $in 으로 포함. doc 레벨 enabled는 필터하지 않는다 —
-        # enabled는 구체 scope가 이기므로(last-wins), 꺼진 조상 doc의 rule을
-        # 켜진 overlay가 상속해 쓸 수 있다. 그 rule의 interval은 조상 doc에만
-        # 있으므로 모든 doc에서 수집해야 한다(아니면 silent lost breach).
+        # 글로벌(*)까지 $in 으로 포함하되, doc 레벨 enabled:false 문서는 제외한다 —
+        # v3에선 비활성 문서의 규칙은 동작하지 않으므로(상속돼도 off) 스케줄할
+        # interval도 없다. 같은 id를 enabled 문서가 재선언하면 그 문서에서 잡힌다.
+        # 레거시(enabled 필드 부재)는 $ne:false 로 포함된다.
         assert mock_collection.find.call_args.args[0] == {
             "scope.process": {"$in": ["CVD", "*"]},
+            "enabled": {"$ne": False},
         }
 
     async def test_unions_intervals_across_scopes(self, mock_collection):

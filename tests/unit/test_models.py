@@ -243,25 +243,77 @@ class TestCascadeFold:
         warn = next(r for r in eff.rules if r.id == "cpu_warn")
         assert warn.when[0].value == 70  # overlay won whole-object
 
-    def test_enabled_most_specific_wins(self):
-        """``enabled`` follows the same cascade rule as every other field:
-        the most-specific document's value wins (no AND kill-switch).
-        회귀(2026-06-12 사고): 전역 off + eqp overlay on → effective는 켜져야 한다."""
-        root_on = MonitorProfile(scope=Scope(process="*"), enabled=True)
-        proc_off = MonitorProfile(scope=Scope(process="P"), enabled=False)
-        eqp_on = MonitorProfile(
-            scope=Scope(process="P", eqp_model="M", eqp_id="E1"), enabled=True
-        )
-        root_off = MonitorProfile(scope=Scope(process="*"), enabled=False)
+    # ``enabled`` is judged per-rule (v3): a rule is active iff
+    # (the scope.enabled of its most-specific declaring doc) AND (rule.enabled).
+    # The folded ``rule.enabled`` is baked to that product; ``profile.enabled``
+    # becomes "has at least one active rule". See
+    # docs/rms-enabled-rulelevel-decision-2026-06-15.md.
 
-        # 구체 scope의 off는 그대로 끈다 (기존 동작 유지)
-        assert fold_profiles([root_on, proc_off], proc_off.scope).enabled is False
-        # 사고 케이스: 꺼진 조상 밑에서도 구체 scope의 on이 이긴다
-        assert fold_profiles([root_off, eqp_on], eqp_on.scope).enabled is True
-        # 3단 케이스: 가장 구체적인 값이 이긴다
-        assert fold_profiles([root_on, proc_off, eqp_on], eqp_on.scope).enabled is True
-        # 단일 문서는 자기 값 그대로
-        assert fold_profiles([root_off], root_off.scope).enabled is False
+    def test_rule_inherited_from_disabled_ancestor_is_off(self):
+        """케이스 a (사고 재현): 비활성 조상에만 있는 rule을, 그 id를 재선언하지
+        않는 활성 overlay가 상속해도 꺼진 채로 남는다."""
+        glob = _make_profile(scope=Scope(process="*"), enabled=False)  # cpu_warn 보유
+        overlay = MonitorProfile(
+            scope=Scope(process="CVD", eqp_id="E1"),
+            enabled=True,
+            rules=[
+                Rule(id="other", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=90)])
+            ],
+        )
+        eff = fold_profiles([glob, overlay], overlay.scope)
+        warn = next(r for r in eff.rules if r.id == "cpu_warn")
+        assert warn.enabled is False  # 비활성 조상 소속 → 상속돼도 off
+
+    def test_rule_redeclared_in_enabled_overlay_is_on(self):
+        """케이스 b: 비활성 조상의 rule을 활성 overlay가 같은 id로 재선언하면 켜진다."""
+        glob = _make_profile(scope=Scope(process="*"), enabled=False)  # cpu_warn value 80
+        overlay = MonitorProfile(
+            scope=Scope(process="CVD", eqp_id="E1"),
+            enabled=True,
+            rules=[
+                Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=70)])
+            ],
+        )
+        eff = fold_profiles([glob, overlay], overlay.scope)
+        warn = next(r for r in eff.rules if r.id == "cpu_warn")
+        assert warn.enabled is True
+        assert warn.when[0].value == 70  # overlay가 통째로 이김
+
+    def test_rule_from_enabled_ancestor_under_disabled_child_is_on(self):
+        """케이스 c: 활성 조상의 rule은, 그 id를 재선언하지 않는 비활성 자식 밑에서도
+        켜진 채로 남는다(자식 scope.enabled=false는 자기 직접 규칙만 끔)."""
+        glob = _make_profile(scope=Scope(process="*"), enabled=True)  # cpu_warn 보유
+        child = MonitorProfile(
+            scope=Scope(process="CVD", eqp_id="E1"), enabled=False, rules=[]
+        )
+        eff = fold_profiles([glob, child], child.scope)
+        warn = next(r for r in eff.rules if r.id == "cpu_warn")
+        assert warn.enabled is True
+
+    def test_profile_enabled_is_any_active_rule(self):
+        """folded ``profile.enabled`` = 활성 규칙(baked enabled) 존재 여부."""
+        glob_off = _make_profile(scope=Scope(process="*"), enabled=False)
+        assert fold_profiles([glob_off], glob_off.scope).enabled is False
+        glob_on = _make_profile(scope=Scope(process="*"), enabled=True)
+        assert fold_profiles([glob_on], glob_on.scope).enabled is True
+
+    def test_measures_from_disabled_scope_still_present(self):
+        """measures는 enabled로 게이팅하지 않는다 — 활성 규칙이 비활성 조상의
+        measure를 참조할 수 있으므로 항상 cascade."""
+        glob = _make_profile(scope=Scope(process="*"), enabled=False)  # cpu measure
+        overlay = MonitorProfile(
+            scope=Scope(process="CVD", eqp_id="E1"),
+            enabled=True,
+            rules=[
+                Rule(id="cpu_warn", interval_minutes=5, severity="WARNING",
+                     when=[Condition(fact="cpu.max", op=">=", value=70)])
+            ],
+        )
+        eff = fold_profiles([glob, overlay], overlay.scope)
+        assert [m.id for m in eff.measures] == ["cpu"]  # 비활성 조상에서 상속
+        assert validate_effective(eff) == []  # cpu_warn의 cpu.max 참조 해소
 
     def test_overlay_disables_inherited_rule(self):
         """Soft tombstone: an overlay re-declaring a rule id with enabled=False

@@ -478,29 +478,37 @@ def fold_profiles(ordered: list[MonitorProfile], target_scope: Scope) -> Monitor
     ``ordered`` must be sorted base→specific, e.g. ``[(*,*,*), (p,*,*), (p,m,*),
     (p,m,e)]``. Merge is by key — ``measures`` by ``measure.id``, ``rules`` by
     ``rule.id``, ``notify`` by channel name — and the more-specific object
-    replaces the whole entry (no field-level partial merge). ``enabled``
-    follows the same rule: the most-specific document's value wins, so an
-    enabled overlay keeps running under a disabled ancestor (and vice versa).
-    A broad-scope ``enabled:false`` therefore only silences equipment that has
-    no more-specific document of its own.
+    replaces the whole entry (no field-level partial merge).
+
+    ``enabled`` is judged per-rule: each folded rule's ``enabled`` is baked to
+    ``(scope.enabled of its most-specific declaring doc) AND rule.enabled``.
+    Because rules merge by id, the most-specific declarer sets both the rule
+    body and its effective enabled — so a rule that lives only in a *disabled*
+    ancestor stays off even when an enabled overlay inherits it (the 2026-06-14
+    incident), while re-declaring that id in an enabled overlay turns it back on
+    (and ``enabled:false`` on the re-declaration is a soft tombstone).
+    ``measures``/``notify`` are never gated by ``enabled`` — an active rule may
+    reference an ancestor's measure. The returned ``profile.enabled`` is "has at
+    least one active rule" (the engine's cheap per-equipment skip).
+    See docs/rms-enabled-rulelevel-decision-2026-06-15.md.
     """
     measures: dict[str, Measure] = {}
     rules: dict[str, Rule] = {}
     notify: dict[str, NotifyChannel] = {}
-    enabled = True
     governance = Governance()
     for prof in ordered:
-        enabled = prof.enabled  # most-specific wins (loop runs base→specific)
         for m in prof.measures:
             measures[m.id] = m
         for r in prof.rules:
-            rules[r.id] = r
+            # Bake the winning scope's enabled: a rule is active iff its
+            # most-specific declaring doc is enabled AND the rule is enabled.
+            rules[r.id] = r.model_copy(update={"enabled": prof.enabled and r.enabled})
         for name, ch in prof.notify.items():
             notify[name] = ch
         governance = prof.governance
     return MonitorProfile(
         scope=target_scope,
-        enabled=enabled,
+        enabled=any(r.enabled for r in rules.values()),
         governance=governance,
         measures=list(measures.values()),
         rules=list(rules.values()),

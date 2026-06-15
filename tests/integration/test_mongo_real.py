@@ -185,11 +185,11 @@ async def test_get_scheduling_intervals_eqp_only_doc(fresh_mongo_db):
     assert await repo.get_scheduling_intervals("CVD") == [5]
 
 
-async def test_get_scheduling_intervals_unions_and_includes_disabled_docs(fresh_mongo_db):
-    """글로벌(*) + eqp 단독 overlay interval 합집합. disabled 문서의 interval도
-    포함한다 — enabled는 구체 scope가 이기므로(last-wins) 꺼진 doc의 rule을
-    켜진 overlay가 상속해 쓸 수 있고, 여기서 빼면 silent lost breach가 된다.
-    (엔진이 tick마다 effective.enabled를 재확인하므로 과잉 스케줄은 무해.)"""
+async def test_get_scheduling_intervals_excludes_disabled_docs(fresh_mongo_db):
+    """글로벌(*) + eqp 단독 overlay interval 합집합. v3에선 disabled 문서의
+    interval은 제외한다 — 비활성 문서의 규칙은 상속돼도 동작하지 않으므로
+    스케줄할 필요가 없다. 같은 id를 enabled 문서가 재선언하면 그 문서에서
+    interval이 잡히므로 breach 누락은 없다."""
     coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
     repo = ProfileRepository(coll)
     # 글로벌(*): interval 10 — 모든 process에 fold되므로 포함돼야 함
@@ -212,12 +212,13 @@ async def test_get_scheduling_intervals_unions_and_includes_disabled_docs(fresh_
                     when=[Condition(fact="cpu.max", op=">=", value=85)])],
     ))
 
-    assert await repo.get_scheduling_intervals("CVD") == [5, 10, 30]
+    assert await repo.get_scheduling_intervals("CVD") == [5, 10]  # disabled d30 제외
 
 
 async def test_resolve_disabled_global_enabled_eqp_overlay(fresh_mongo_db):
-    """★ 회귀(2026-06-12 사고): 전역 (*,*,*) enabled:false + eqp overlay
-    enabled:true → effective는 켜져야 한다(enabled도 구체 scope가 이김)."""
+    """v3: 전역 (*,*,*) enabled:false + eqp overlay enabled:true(cpu_crit 보유)
+    → E1은 켜진 overlay 소속의 활성 규칙이 있어 effective.enabled=True; overlay
+    없는 E2는 전역(off)만이라 활성 규칙이 없어 False."""
     coll = fresh_mongo_db["RESOURCE_MONITOR_PROFILE"]
     repo = ProfileRepository(coll)
     glob = _v2_profile(Scope(process="*"))

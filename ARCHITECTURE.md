@@ -195,13 +195,13 @@ SEVERITY: WARNING, CRITICAL  (rule이 소유)
 기준정보를 **단일 컬렉션** `RESOURCE_MONITOR_PROFILE`(scope당 문서 1개)에 3계층으로 둡니다(구설계의 `RESOURCE_MONITOR_RULE` 2분할은 폐기):
 
 - **measures[]** (잰다) — `{id, category, metric, proc, window_minutes, facts[]}`. 무엇을·어떻게 ES에서 집계해 어떤 **fact**를 산출할지. 주기(interval)는 갖지 않음(집계창 window만).
-- **rules[]** (판단 + 주기) — `{id, interval_minutes, severity, combine, when[], notify, enabled}`. `when[].fact = "measureId.type"` 로 measure의 fact를 참조. **단순 임계값 = 조건 1개 rule, 복합 = 조건 여러 개 rule** (단일/복합을 컬렉션으로 가르지 않음). `enabled`(기본 true)는 rule 개별 on/off — `false`면 엔진 평가·스케줄 cadence에서 제외(문서 레벨 `enabled`와 별개).
+- **rules[]** (판단 + 주기) — `{id, interval_minutes, severity, combine, when[], notify, enabled}`. `when[].fact = "measureId.type"` 로 measure의 fact를 참조. **단순 임계값 = 조건 1개 rule, 복합 = 조건 여러 개 rule** (단일/복합을 컬렉션으로 가르지 않음). `enabled`(기본 true)는 rule 개별 on/off — `false`면 엔진 평가·스케줄 cadence에서 제외. 문서 `enabled`와는 AND로 결합돼 규칙 단위로 판정된다(§6).
 - **notify{}** (알린다) — 이름→`{cooldown_minutes, email_code, email_subcode?, group_by, email_group?}` 맵. rule이 이름으로 참조. `group_by`(`eqp`기본/`model`/`process`)는 **메일 발송 단위** — `eqp` 외엔 같은 그룹 장비 breach를 1통으로 집계(`AffectedEquipment` 변수에 목록, 제목 헤드라인=group_value). `email_group`(접미사)을 설정하면 RMS가 `EMAIL-{process}-{model_token}-{email_group}`(process 묶음은 model_token=`ALL`)를 조립해 수신자 라우팅에 직접 사용, 미설정 시 Akka 역산. [SCHEMA.md §1.5](SCHEMA.md).
 
 핵심 규칙:
 - **1 measure 항목 = 1 fact = 1 type.** `type` 이름이 곧 fact 이름(`max`/`min`/`avg`/`last`/`p50`·`p90`·`p95`·`p99`/`spike_count`/`duration`/`delta`/`growth_rate`/`moving_avg`/`trend`/`zscore`/`baseline_dev`). 한 measure 내 type 유일. type 카탈로그는 닫힌 enum(`src/analyzer/fact_catalog.py`). Phase 1(`max`~`spike_count`)은 엔진 평가, Phase 2/3은 스키마 수용·엔진 skip.
 - **경보 방향**은 rule의 op로 표현(높을때 `>=`, 낮을때 `<=`, 범위이탈 두 조건 OR, 상태 `==`). `state_check`은 별도 type 없이 `min`/`max`로 흡수.
-- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay). 문서 `enabled`도 같은 규칙 — **구체 문서의 값이 이김**(조상이 `false`여도 overlay가 `true`면 그 scope는 켜짐. 광역 off는 overlay 없는 장비만 끈다). 구체 scope에서 같은 `rule.id`를 `enabled:false`로 덮으면 그 scope에서만 rule이 꺼진다(소프트 tombstone — 상속 항목 완전 삭제는 추후). [SCHEMA.md §6](SCHEMA.md).
+- **scope 계층 상속(cascade)**: 넓은 scope를 base로, 구체 scope가 key(measure.id/rule.id/notify) 기준 통째 override(sparse overlay). `enabled`는 **규칙 단위로 판정** — 각 규칙의 유효 활성 = (그 규칙을 가진 가장 구체적 scope의 `scope.enabled`) AND (`rule.enabled`). 따라서 광역 문서의 `enabled:false`는 **그 문서가 직접 가진 규칙만** 끄고, 상속 규칙은 그 규칙의 선언 scope가 지배한다(켜진 overlay가 같은 id로 재선언하면 켜짐). 상속 규칙을 특정 scope에서 끄려면 같은 `rule.id`를 `enabled:false`로 재선언(소프트 tombstone). folded `profile.enabled`는 "활성 규칙 존재 여부". [SCHEMA.md §6](SCHEMA.md), [결정문서](docs/rms-enabled-rulelevel-decision-2026-06-15.md).
 
 ### v2 평가 흐름 (as-built)
 

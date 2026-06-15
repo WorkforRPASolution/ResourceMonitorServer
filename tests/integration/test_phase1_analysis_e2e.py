@@ -311,8 +311,9 @@ async def test_disabled_rule_does_not_fire(real_es, phase1_db, real_redis, ns, m
 
 
 # ======================================================================
-# E3c — ★ 회귀(2026-06-12 사고): 전역 doc enabled:false + eqp overlay
-#        enabled:true → 그 장비는 평가·발송된다 (enabled도 구체 scope가 이김)
+# E3c — 전역 doc enabled:false 밑에서, 켜진 eqp overlay가 같은 rule id를
+#        재선언하면 그 규칙은 발화한다 (v3: rule은 가장 구체적 선언 scope의
+#        enabled를 따름 — 재선언자=overlay(on))
 # ======================================================================
 async def test_global_disabled_eqp_overlay_still_alerts(
     real_es, phase1_db, real_redis, ns, mock_email_server
@@ -352,6 +353,48 @@ async def test_global_disabled_eqp_overlay_still_alerts(
     assert result.breaches[0].eqp_id == eqp_id
     (payload,) = mock_email_server["received"]
     assert payload["hostname"] == eqp_id
+
+
+# ======================================================================
+# E3d — ★ 회귀(2026-06-14 사고): 전역 doc enabled:false 의 rule이 켜진
+#        overlay로 상속돼도, overlay가 그 id를 재선언하지 않으면 발화하지 않는다
+#        (v3: rule은 자기 선언 scope의 enabled를 따른다 — disk_full 누수 방지)
+# ======================================================================
+async def test_inherited_rule_from_disabled_global_does_not_fire(
+    real_es, phase1_db, real_redis, ns, mock_email_server
+):
+    process, eqp_id = "E2E_INHERIT", "E2E-INHERIT-01"
+    index = await _seed_es(real_es, process,
+                           [{"eqpId": eqp_id, "category": "cpu",
+                             "metric": "total_used_pct", "value": 92.0}])
+    await _seed_eqp_info(phase1_db, process, eqp_id)
+    # 전역 (*,*,*): 꺼진 doc인데 cpu_warn(임계 80) 보유 — 사고의 disk_full 위치
+    glob = MonitorProfile(
+        scope=Scope(process="*"),
+        enabled=False,
+        measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
+                          window_minutes=10, facts=[Fact(type="max")])],
+        rules=[_warn(80)],
+        notify={"default": NotifyChannel(cooldown_minutes=30)},
+    )
+    await _seed_profile(phase1_db, glob)
+    # eqp overlay: 켜져 있지만 cpu_warn을 재선언하지 않음 — 다른 id(cpu_crit, 임계 99)만
+    overlay = MonitorProfile(
+        scope=Scope(process=process, eqp_model="MODEL-E2E", eqp_id=eqp_id),
+        enabled=True,
+        rules=[_crit(99)],
+    )
+    await _seed_profile(phase1_db, overlay)
+    try:
+        (result,) = await _drive(real_es, phase1_db, real_redis, ns,
+                                 mock_email_server["url"], process)
+    finally:
+        await real_es.indices.delete(index=index, ignore=[404])
+
+    # 92 ≥ 80(cpu_warn 임계)이지만 cpu_warn은 꺼진 전역 소속이라 발화 안 함.
+    # cpu_crit(99)도 92 < 99 라 미breach. 옛 last-wins였다면 상속 cpu_warn이 1통 발송했다.
+    assert result.breaches == []
+    assert mock_email_server["received"] == []
 
 
 # ======================================================================

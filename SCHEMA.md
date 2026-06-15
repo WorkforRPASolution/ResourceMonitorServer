@@ -290,13 +290,29 @@ base에 overlay를 차례로 덮습니다. `uniq_scope` 덕에 각 레벨 최대
 | `measures` | `measure.id` | 구체 문서의 measure가 **통째로 교체** |
 | `rules` | `rule.id` | 구체 문서의 rule이 **통째로 교체** |
 | `notify` | 맵 이름 | 구체 문서의 채널이 **통째로 교체** |
-| `enabled` | — | 구체 문서의 값이 **통째로 이김** (다른 필드와 동일) |
+| `enabled` | (rule별) | **규칙 단위 판정** — 아래 참조 |
 
 - 같은 key가 양쪽에 있으면 **구체 문서의 객체가 통째로 이김**(필드 단위 부분 병합 금지 — 결정적·예측가능). 구체 문서에만 있는 key는 추가.
-- **`enabled`도 같은 규칙**: 조상 문서가 `false`여도 더 구체적인 문서가 `true`면 그 scope는 켜집니다(반대도 동일). ⚠️ 따라서 광역 scope의 `enabled:false`는 **자기 overlay 문서가 없는 장비만** 끕니다 — overlay가 있는 장비는 그 문서의 `enabled`(기본 `true`)가 우선이므로, 그 장비까지 끄려면 해당 overlay도 `enabled:false`로 바꿔야 합니다.
+- **`enabled`는 규칙(rule) 단위로 판정합니다.** 각 규칙의 유효 활성 = **(그 규칙을 가진 *가장 구체적인* scope 문서의 `scope.enabled`) AND (그 문서에서의 `rule.enabled`)**. 규칙은 `rule.id`로 병합되므로 **가장 구체적인 선언자가 규칙 내용과 유효 enabled를 함께 결정**합니다. 따라서:
+  - 어떤 규칙이 **비활성(`enabled:false`) 문서에만** 있으면, 켜진 하위 overlay가 상속해도 **꺼진 채로** 남습니다. ⚠️ 즉 광역 scope의 `enabled:false`는 **그 문서가 직접 가진 규칙만** 끕니다(상속 규칙은 그 규칙의 선언 scope가 지배).
+  - 그 규칙을 **켜진 하위 overlay에서 같은 id로 재선언**하면 켜집니다(overlay가 승자).
+  - 상속받은 규칙을 특정 scope에서 끄려면 **같은 id로 `rule.enabled:false`를 재선언**(soft tombstone)합니다.
+  - folded `profile.enabled`는 "활성 규칙이 하나라도 있는가"이며, 엔진이 장비를 값싸게 건너뛰는 데 씁니다.
+
+  진리표 (G=`*/*/*`, P=구체 overlay, 장비는 P 소속, 규칙 R):
+
+  | G.scope / G의 R(rule_en) | P.scope / P의 R(rule_en) | 승자 | 유효 |
+  |---|---|---|---|
+  | off / 있음(true) | on / 없음 | G | **off** (광역 off의 규칙은 상속돼도 꺼짐) |
+  | off / 있음(true) | on / 있음(true) | P | **on** (재선언 overlay) |
+  | on / 있음(true) | off / 없음 | G | **on** (P가 그 규칙 미선언 → G 따름) |
+  | on / 있음(true) | off / 있음(false) | P | **off** (tombstone) |
+  | on / 있음(false) | on / 없음 | G | **off** (rule_en 자체 off) |
+
 - "임계 하나만 바꾸기" = 그 **rule 하나만** overlay에 다시 적음(작음). 나머지 measures/rules/notify는 전부 상속 → 전역 변경이 자동 전파.
+- `measures`/`notify`는 `enabled`로 게이팅하지 않습니다 — 활성 규칙이 비활성 조상의 measure를 참조할 수 있으므로 항상 cascade.
 - 출처 추적(provenance)·effective-profile 조회 API는 **구현 완료**(`GET /profiles/effective?withProvenance=1` — 각 항목에 기여 scope 라벨).
-- **rule 개별 비활성(소프트 tombstone)은 구현 완료**: overlay에서 같은 `rule.id`를 `enabled:false`로 다시 적으면 통째 교체 규칙에 따라 그 scope에서만 rule이 꺼집니다(전역은 유지). 상속 항목을 목록에서 **완전히 제거**하는 tombstone은 여전히 추후 — 지금은 `enabled:false` 뮤트가 그 역할을 대신합니다.
+- 결정 근거: `docs/rms-enabled-rulelevel-decision-2026-06-15.md`(2026-06-12 last-wins 결정을 supersede).
 
 ### 6.3 sparse overlay 예시
 
