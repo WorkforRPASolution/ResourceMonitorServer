@@ -13,14 +13,14 @@ $ErrorActionPreference = "Stop"
 #
 #   사용법:
 #     powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1
-#       [-Proxy http://ip:port] [-Registry https://nexus/pypi-all/simple/] [-Public]
+#       [-Proxy http://ip:port] [-Registry https://nexus/pypi/simple/] [-Public]
 #
 #   ⚠️ 기본 미러 URL 은 WebManager Nexus 호스트에서 유추한 값.
 #      실제 사내 pypi repo 경로가 다르면 -Registry 로 지정하거나 아래 기본값 수정.
 # ----------------------------------------------------------------------
 
 # ⚠️ 확인 필요: 사내 PyPI(Nexus) simple 인덱스
-$DefaultPipIndexUrl = "https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi-all/simple/"
+$DefaultPipIndexUrl = "https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi/simple/"
 
 # --- 의존성 출처 결정 ---
 $PipIndexUrl = ""

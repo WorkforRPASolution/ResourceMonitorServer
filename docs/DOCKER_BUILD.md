@@ -94,7 +94,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-package.ps1
 
 # (b) 프록시 경유 + 미러 명시
 ./scripts/build-image.sh --proxy http://10.x.x.x:8080 \
-                         --registry https://<nexus>/repository/pypi-all/simple/
+                         --registry https://<nexus>/repository/pypi/simple/
 
 # (c) 인터넷 되는 곳에서 공용 pypi 로 빌드(개발/검증용)
 ./scripts/build-image.sh --public
@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-package.ps1
 **Windows (Docker Desktop)**
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1
-powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1 -Proxy http://10.x.x.x:8080 -Registry https://<nexus>/repository/pypi-all/simple/
+powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1 -Proxy http://10.x.x.x:8080 -Registry https://<nexus>/repository/pypi/simple/
 powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1 -Public
 ```
 
@@ -115,7 +115,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-image.ps1 -Public
 스크립트의 기본 미러 URL 은 WebManager 의 Nexus 호스트(`scpnexus.itplatform.samsungdisplay.net:8081`)에서 **유추한 값**이다:
 
 ```
-https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi-all/simple/
+https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi/simple/
 ```
 
 실제 사내 PyPI(pypi proxy) repo 경로가 다르면 둘 중 하나로 맞춘다:

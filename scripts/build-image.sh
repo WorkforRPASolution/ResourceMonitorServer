@@ -10,7 +10,7 @@ set -e
 #
 #   사용법:
 #     ./scripts/build-image.sh [--proxy http://ip:port]
-#                              [--registry https://nexus/pypi-all/simple/]
+#                              [--registry https://nexus/pypi/simple/]
 #                              [--public]            # 공용 pypi.org 로 빌드
 #
 #   기본 미러 URL 은 WebManager 의 Nexus 호스트에서 유추한 값이다.
@@ -26,7 +26,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
 # ⚠️ 확인 필요: 사내 PyPI(Nexus) simple 인덱스. WebManager npm-all 호스트 기준 유추.
-DEFAULT_PIP_INDEX_URL="https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi-all/simple/"
+DEFAULT_PIP_INDEX_URL="https://scpnexus.itplatform.samsungdisplay.net:8081/nexus/repository/pypi/simple/"
 
 # ─── 옵션 파싱 ───
 PROXY=""
