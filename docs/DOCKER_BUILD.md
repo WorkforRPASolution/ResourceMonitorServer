@@ -142,6 +142,8 @@ tar 를 운영 노드로 옮긴 뒤:
 docker load -i ResourceMonitorServer@{버전}.tar
 kubectl apply -f secret.yaml # 먼저: secret.yaml.example 채워서 생성(§5.2). 안 하면 Pod 기동 실패
 kubectl apply -f k8s/        # configmap, deployment, service, pdb (.example 은 자동 제외)
+# ⚠️ k8s <1.21 이면 pdb.yaml(policy/v1) 미지원 → 제외하고 개별 적용(자세히는 §5 호환 노트):
+#    kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml -f k8s/service.yaml
 kubectl get pods -l app=resource-monitor-server
 kubectl logs  -l app=resource-monitor-server
 ```
@@ -168,6 +170,12 @@ docker run -d -p 8000:8000 --env-file .env resource-monitor-server:{버전}
 > **적용 순서** — ConfigMap·Secret 이 먼저 존재해야 Deployment 의 `envFrom` 이 해석된다. `kubectl apply -f k8s/` 는 파일명 알파벳 순(configmap→deployment→pdb→secret→service)으로 적용하지만 Pod 는 스케줄 시점에 env 를 읽으므로 한 번에 apply 해도 무방하다. 불안하면 `kubectl apply -f k8s/configmap.yaml -f k8s/secret.yaml` 을 먼저 실행한다.
 >
 > `secret.yaml` 은 실제 자격증명이 들어가므로 **커밋 금지**(`secret.yaml.example` 만 커밋, `secret.yaml` 은 `.gitignore`).
+
+> **⚠️ k8s 버전 호환 — `pdb.yaml`(policy/v1)=1.21+, `seccompProfile`=1.19+**
+> 이 묶음은 비교적 최신 필드를 일부 쓴다. **타깃이 k8s 1.21 미만(예: 1.14)이면 그대로 두고 적용만 제외**한다(매니페스트 수정 불필요, **나중에 k8s 업그레이드 시 도입**):
+> - **`pdb.yaml` 은 적용하지 말 것** — `policy/v1` PodDisruptionBudget 은 **k8s 1.21 에서 GA** 라 그 미만에선 `kubectl apply` 가 `no matches for kind "PodDisruptionBudget" in version "policy/v1"` 로 실패한다. 지금은 **단일 인스턴스라 PDB 없이도 무방**하며, **k8s 1.21+ 로 마이그레이션할 때** 그대로 적용하면 된다(1.21 미만에서 꼭 쓰려면 `apiVersion: policy/v1beta1` 로만 바꿔도 동작).
+> - **`deployment.yaml` 의 `securityContext.seccompProfile`(RuntimeDefault) 은 k8s 1.19+ 필드** — 1.14 에선 미지원이라 kubectl 검증에서 거부되거나 서버에서 드롭된다. 적용이 막히면 deployment 의 `seccompProfile:` 두 줄을 임시로 제거/주석(**1.19+ 로 올라가면 복원**). 1.19+ 에선 그대로 정상 적용.
+> - 그 외(Deployment `apps/v1`, Service/ConfigMap/Secret `v1`, probe, `runAsNonRoot`/`readOnlyRootFilesystem`/`capabilities`/`fsGroup`/`preStop`)는 1.14 에서도 동작한다.
 
 ### 5.1 ConfigMap — 비밀 아닌 설정 (`k8s/configmap.yaml`)
 
@@ -412,7 +420,12 @@ spec:
       protocol: TCP
 ```
 
-- 클러스터 내부용 `ClusterIP`, 포트 8000(`http`). probe·메트릭(`/metrics`, §5.7)도 모두 같은 포트를 쓴다.
+- 클러스터 내부용 `ClusterIP`, 포트 8000(`http`) 하나로 API·`/metrics`(§5.7)를 모두 노출한다.
+  - probe(liveness/readiness)는 **kubelet이 Pod 에 직접** 접속하므로 이 Service 를 거치지 않는다(같은 8000 포트 사용).
+- **WebManager 프록시 진입점**: WebManager 의 `RESOURCE_MONITOR_PROFILE`(모니터링 기준정보) 관리 기능은 **모든 쓰기와 `effective` 조회·readiness 체크를 이 Service 를 통해 RMS HTTP API 로 프록시**한다(`WebManager/server/features/rms-monitor-profile/rmsProfileClient.js`). RMS 의 Pydantic 검증(단일 진실)·`governance.version` 낙관락·TTLCache 무효화를 재사용하기 위함이며, WebManager 는 프로파일 컬렉션에 **직접 쓰지 않는다**(목록/scope옵션/inspect/blast-radius 등 일부 조회만 Mongo read-only).
+  - WebManager 측 환경변수(**같은 네임스페이스**): `RMS_API_URL=http://resource-monitor-server:8000` (+ 선택 `RMS_API_TIMEOUT_MS=10000`). 크로스 네임스페이스면 `http://resource-monitor-server.<ns>.svc.cluster.local:8000`. ⚠️ 스킴 `http://` 필수. 미설정 시 클라이언트가 `503 RMS_NOT_CONFIGURED` 반환.
+  - 호출 엔드포인트 — 읽기: `GET /profiles`, `GET /profiles/effective`, `GET /healthz/ready` · 쓰기: `POST/PUT/DELETE /profiles`, `.../measures*`, `.../rules*`, `PATCH /profiles/notify/{name}`.
+- ⚠️ **무인증 → ClusterIP 유지**: RMS API 에는 인증이 없고 **WebManager 가 유일한 권한 게이트**다. 따라서 이 Service 는 `ClusterIP`(클러스터 내부 전용)로 유지하고 **외부(Ingress/LoadBalancer/NodePort)로 노출하지 말 것**. 또한 짧은 이름(`resource-monitor-server`) resolve 를 위해 WebManager 와 **같은 네임스페이스에 배포**한다.
 
 ### 5.5 PodDisruptionBudget (`k8s/pdb.yaml`)
 
@@ -434,6 +447,7 @@ spec:
 
 - Phase 0 단일 인스턴스에서는 `maxUnavailable: 0` 으로 노드 drain 시 PreStop 이 끝날 때까지 evict 를 막는다.
 - Phase 1+ 멀티 인스턴스로 가면 `minAvailable: 1`(또는 `maxUnavailable: 1`)로 완화한다.
+- ⚠️ **k8s 버전**: `apiVersion: policy/v1` 은 **k8s 1.21+ 전용**이다. 1.21 미만(1.14 등)에서는 **적용하지 말 것**(§5 머리 호환 노트 참고) — 단일 인스턴스라 없어도 무방하며, **1.21+ 마이그레이션 시 도입**한다. (참고: `maxUnavailable: 0` 은 자발적 eviction 을 0 건 허용 = 노드 drain 시 이 파드 축출을 거부하므로, 점검 시 `kubectl drain --disable-eviction` 등으로 강제해야 한다.)
 
 ### 5.6 환경변수 레퍼런스
 
@@ -544,6 +558,8 @@ cp k8s/secret.yaml.example secret.yaml      # 편집기로 CHANGE_ME 값 채운 
 kubectl apply -f secret.yaml
 
 # 2) 나머지 — 디렉터리 적용은 .yaml/.yml/.json 만 처리(.example 은 자동 제외)
+#    ⚠️ k8s <1.21 이면 pdb.yaml(policy/v1) 제외:
+#       kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml -f k8s/service.yaml
 kubectl apply -f k8s/                       # configmap, deployment, service, pdb
 
 kubectl rollout status deploy/resource-monitor-server
