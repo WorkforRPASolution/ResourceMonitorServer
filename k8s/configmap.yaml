@@ -49,7 +49,7 @@ data:
 
   # ----- Logging -----
   MONITOR_LOG_LEVEL: "INFO"
-  MONITOR_LOG_FORMAT: "json"
+  MONITOR_LOG_FORMAT: "console"
 
   # ----------------------------------------------------------------------
   # ⚠️ DO NOT SET MONITOR_DEBUG_READ_ONLY IN PRODUCTION
