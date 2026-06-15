@@ -63,6 +63,15 @@ class AppSettings(BaseSettings):
     redis_url: str = "redis://redis:6379/5"
     redis_password: SecretStr = SecretStr("")
     redis_key_prefix: str = "RESOURCE_ALERT"
+    # Redis HA via Sentinel (옵션). redis_sentinels 가 비어 있으면 redis_url(단일
+    # 엔드포인트) 모드, 비어 있지 않으면 Sentinel 모드: 각 "host:port"(보통 26379)
+    # 목록으로 sentinel 에 물어 현재 master 를 찾아 연결한다(페일오버 자동 추종).
+    # DB 는 URL 의 /N 대신 redis_db 로 지정. sentinel 자체 인증이 데이터 노드와
+    # 다르면 redis_sentinel_password 로 분리(비우면 redis_password 재사용).
+    redis_sentinels: Annotated[list[str], NoDecode] = []
+    redis_sentinel_master: str = "mymaster"
+    redis_sentinel_password: SecretStr = SecretStr("")
+    redis_db: int = 0  # Sentinel 모드 DB 번호 (RMS 예약=5 → configmap 에서 명시)
 
     # Email alert HTTP API (Akka HttpWebServer)
     email_api_url: str = "http://httpwebserver:8080/EmailNotify"
@@ -115,7 +124,7 @@ class AppSettings(BaseSettings):
     # EqpInfoRepository.get_distinct_processes() 결과 전체를 사용.
     debug_processes: Annotated[list[str], NoDecode] = []
 
-    @field_validator("es_hosts", "debug_processes", mode="before")
+    @field_validator("es_hosts", "debug_processes", "redis_sentinels", mode="before")
     @classmethod
     def parse_string_list(cls, v):
         """Accept both JSON array and comma-separated string.

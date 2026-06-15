@@ -192,5 +192,137 @@ class TestRedisClientClose:
         underlying = AsyncMock()
         client._client = underlying
         await client.close()
-        underlying.close.assert_awaited_once()
+        # redis-py 5.0.1+ deprecates close() → must use aclose()
+        underlying.aclose.assert_awaited_once()
+        assert client._client is None
+
+
+@pytest.mark.unit
+class TestRedisSentinelSettings:
+    """redis_sentinels 는 콤마/JSON 문자열을 list[str] 로 파싱(es_hosts 패턴)."""
+
+    def test_sentinels_parsed_from_comma_string(self):
+        s = AppSettings(redis_sentinels="h0:26379,h1:26379,h2:26379")
+        assert s.redis_sentinels == ["h0:26379", "h1:26379", "h2:26379"]
+
+    def test_sentinels_empty_by_default(self):
+        assert AppSettings().redis_sentinels == []
+
+    def test_sentinel_master_default_is_mymaster(self):
+        assert AppSettings().redis_sentinel_master == "mymaster"
+
+
+@pytest.mark.unit
+class TestRedisSentinelConnect:
+    """redis_sentinels 가 설정되면 Sentinel.master_for 로 현재 마스터에 연결한다.
+
+    기존 실 사내 설정 형태:
+      mdb-redis-ha-announce-0..2.<ns>.svc.cluster.local:26379  + master 그룹 'mymaster'
+    """
+
+    @pytest.fixture
+    def sentinel_settings(self) -> AppSettings:
+        return AppSettings(
+            redis_sentinels="h0:26379,h1:26379,h2:26379",
+            redis_sentinel_master="mymaster",
+            redis_db=5,
+            redis_password="secretpass",
+        )
+
+    async def test_sentinel_mode_uses_master_for_not_from_url(self, sentinel_settings):
+        client = RedisClient(sentinel_settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls, patch(
+            "src.cache.redis_client.Redis"
+        ) as mock_redis_cls:
+            sentinel_obj = mock_sentinel_cls.return_value
+            master = AsyncMock()
+            sentinel_obj.master_for.return_value = master
+            await client.connect()
+        mock_redis_cls.from_url.assert_not_called()
+        mock_sentinel_cls.assert_called_once()
+        master.ping.assert_awaited_once()
+        assert client._client is master
+
+    async def test_sentinel_hosts_parsed_to_host_port_tuples(self, sentinel_settings):
+        client = RedisClient(sentinel_settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        sentinels_arg = mock_sentinel_cls.call_args.args[0]
+        assert sentinels_arg == [("h0", 26379), ("h1", 26379), ("h2", 26379)]
+
+    async def test_master_name_and_db_passed_to_master_for(self, sentinel_settings):
+        client = RedisClient(sentinel_settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        args, kwargs = mock_sentinel_cls.return_value.master_for.call_args
+        assert args[0] == "mymaster"
+        assert kwargs["db"] == 5
+
+    async def test_sentinel_pins_protocol_2_and_data_password(self, sentinel_settings):
+        client = RedisClient(sentinel_settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        kwargs = mock_sentinel_cls.call_args.kwargs
+        assert kwargs["protocol"] == 2
+        assert kwargs["password"] == "secretpass"
+
+    async def test_sentinel_auth_falls_back_to_redis_password(self, sentinel_settings):
+        """redis_sentinel_password 미설정 시 sentinel 인증은 redis_password 재사용."""
+        client = RedisClient(sentinel_settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        kwargs = mock_sentinel_cls.call_args.kwargs
+        assert kwargs["sentinel_kwargs"] == {"password": "secretpass"}
+
+    async def test_separate_sentinel_password_used_when_set(self):
+        settings = AppSettings(
+            redis_sentinels="h0:26379",
+            redis_password="datapass",
+            redis_sentinel_password="sentpass",
+        )
+        client = RedisClient(settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        kwargs = mock_sentinel_cls.call_args.kwargs
+        assert kwargs["sentinel_kwargs"] == {"password": "sentpass"}
+        assert kwargs["password"] == "datapass"  # 데이터 노드는 redis_password
+
+    async def test_host_without_port_defaults_to_26379(self):
+        settings = AppSettings(redis_sentinels="h0,h1:26380")
+        client = RedisClient(settings)
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            mock_sentinel_cls.return_value.master_for.return_value = AsyncMock()
+            await client.connect()
+        assert mock_sentinel_cls.call_args.args[0] == [("h0", 26379), ("h1", 26380)]
+
+    async def test_url_mode_when_no_sentinels(self, settings):
+        """sentinels 미설정 → 기존 단일 URL(from_url) 동작 유지."""
+        client = RedisClient(settings)
+        with patch("src.cache.redis_client.Redis") as mock_cls, patch(
+            "src.cache.redis_client.Sentinel"
+        ) as mock_sentinel_cls:
+            mock_cls.from_url.return_value = AsyncMock()
+            await client.connect()
+        mock_cls.from_url.assert_called_once()
+        mock_sentinel_cls.assert_not_called()
+
+    async def test_close_also_closes_sentinel_monitor_connections(
+        self, sentinel_settings
+    ):
+        """close() 는 master pool 뿐 아니라 Sentinel 모니터링 연결도 정리한다(누수 방지)."""
+        client = RedisClient(sentinel_settings)
+        s0, s1 = AsyncMock(), AsyncMock()
+        with patch("src.cache.redis_client.Sentinel") as mock_sentinel_cls:
+            sentinel_obj = mock_sentinel_cls.return_value
+            sentinel_obj.sentinels = [s0, s1]
+            sentinel_obj.master_for.return_value = AsyncMock()
+            await client.connect()
+            await client.close()
+        s0.aclose.assert_awaited_once()
+        s1.aclose.assert_awaited_once()
         assert client._client is None

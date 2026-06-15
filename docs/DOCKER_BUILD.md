@@ -207,6 +207,12 @@ data:
   # prefix 'RESOURCE_ALERT:' 는 belt-and-suspenders 이중 가드
   MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
   MONITOR_REDIS_KEY_PREFIX: "RESOURCE_ALERT"
+  # ----- (선택) Redis HA via Sentinel -----
+  # MONITOR_REDIS_SENTINELS 설정 시 위 URL 대신 Sentinel 모드(현재 master 자동 추종).
+  # 포트는 보통 26379, DB 는 URL 의 /N 대신 MONITOR_REDIS_DB 로 지정.
+  # MONITOR_REDIS_SENTINELS: "mdb-redis-ha-announce-0.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-1.ears-base.svc.cluster.local:26379,mdb-redis-ha-announce-2.ears-base.svc.cluster.local:26379"
+  # MONITOR_REDIS_SENTINEL_MASTER: "mymaster"
+  # MONITOR_REDIS_DB: "5"
 
   # ----- Email API (Akka HttpWebServer) -----
   MONITOR_EMAIL_API_URL: "http://httpwebserver.notification:8080/EmailNotify"
@@ -262,6 +268,8 @@ stringData:
 
   # Redis AUTH (5.0.6은 ACL 없음 — 단일 password)
   MONITOR_REDIS_PASSWORD: "CHANGE_ME"
+  # (선택) Sentinel 인증이 데이터 노드와 다를 때만. 비우면 REDIS_PASSWORD 재사용.
+  # MONITOR_REDIS_SENTINEL_PASSWORD: ""
 
   # ZK SASL — 미사용 시 둘 다 빈 문자열
   MONITOR_ZK_SASL_MECHANISM: ""
@@ -456,6 +464,10 @@ spec:
 | `MONITOR_REDIS_URL` | ConfigMap | `redis://redis:6379/5` | Redis URL(DB 5 = RMS 전용) |
 | `MONITOR_REDIS_PASSWORD` | **Secret** | `""` | Redis AUTH(단일 password) |
 | `MONITOR_REDIS_KEY_PREFIX` | ConfigMap | `RESOURCE_ALERT` | Redis 키 접두사 |
+| `MONITOR_REDIS_SENTINELS` | 선택 | `[]` | 설정 시 **Sentinel 모드**. `host:26379` 콤마/JSON 목록(URL 대체) |
+| `MONITOR_REDIS_SENTINEL_MASTER` | 선택 | `mymaster` | Sentinel master 그룹명 |
+| `MONITOR_REDIS_SENTINEL_PASSWORD` | **Secret** | `""` | sentinel 인증(비우면 `REDIS_PASSWORD` 재사용) |
+| `MONITOR_REDIS_DB` | 선택 | `0` | Sentinel 모드 DB 번호(RMS 예약=5) |
 | `MONITOR_EMAIL_API_URL` | ConfigMap | `http://httpwebserver:8080/EmailNotify` | Akka 메일 API |
 | `MONITOR_EMAIL_API_TIMEOUT` | ConfigMap | `10` | 메일 API timeout(s) |
 | `MONITOR_EMAIL_APP_NAME` | 선택 | `ARS` | Akka EmailWorker 템플릿/카테고리 조회 키 |
