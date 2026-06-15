@@ -9,6 +9,7 @@ rule's resolved notify channel: ``code = notify.email_code`` and
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,15 @@ _KST = ZoneInfo("Asia/Seoul")
 # Default overflow row for the ERB cap; assumes a table-based block (the common
 # case). Per-template overflow text was intentionally dropped (minimal schema).
 _DEFAULT_OVERFLOW = '<tr><td colspan="99">외 @RemainingCount대 더 있습니다…</td></tr>'
+
+
+def _round_display(value: float | None) -> float | None:
+    """Round a measured value to 1 decimal for email display (round-half-up:
+    95.34→95.3, 95.35→95.4, 88.96→89.0). ``None`` passes through. Applied to all
+    CurrentValue tokens (legacy/scalar/row) so emails show a tidy value."""
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 # the cooldown key tuple shape, single source of truth shared with the engine
 # and AlertCooldownManager (process, eqpId, proc, notify, severity). In group
@@ -137,7 +147,7 @@ def build_alert_request(
         "Severity": breach.severity,
         "Category": category,
         "MetricName": breach.fact,
-        "CurrentValue": str(breach.current_value),
+        "CurrentValue": str(_round_display(breach.current_value)),
         "Threshold": str(breach.threshold_value),
         "WindowMin": str(window_minutes),
         "GrafanaUrl": grafana_url,
@@ -196,7 +206,7 @@ def _build_scalars(
         "@Severity": breach.severity,
         "@Category": category,
         "@Fact": breach.fact,
-        "@CurrentValue": breach.current_value,
+        "@CurrentValue": _round_display(breach.current_value),
         "@Threshold": breach.threshold_value,
         "@Operator": breach.op,
         "@WindowMin": window_minutes,
@@ -227,7 +237,7 @@ def _build_rows(
         info = eqp_lookup.get(m.eqp_id, {})
         rows.append({
             "@Row.EqpId": m.eqp_id,
-            "@Row.CurrentValue": m.current_value,
+            "@Row.CurrentValue": _round_display(m.current_value),
             "@Row.Threshold": m.threshold_value,
             "@Row.Severity": m.severity,
             "@Row.Fact": m.fact,

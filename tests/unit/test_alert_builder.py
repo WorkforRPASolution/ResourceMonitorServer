@@ -129,6 +129,25 @@ class TestBuildAlertRequest:
         assert req.variables["Threshold"] == "85.0"
         assert req.variables["WindowMin"] == "10"
 
+    def test_current_value_rounded_one_decimal(self):
+        # 메일 표시용: 현재값을 소수점 둘째 자리에서 반올림(결과 1자리). 95.34567 → 95.3
+        req = build_alert_request(
+            _breach(current_value=95.34567), _EQP, "CVD", _make_settings(),
+            NotifyChannel(cooldown_minutes=30), window_minutes=15,
+        )
+        assert req.variables["CurrentValue"] == "95.3"
+
+    def test_current_value_rounds_half_up(self):
+        # 둘째 자리가 5 이상이면 올림(반올림). 95.35 → 95.4, 88.96 → 89.0
+        assert build_alert_request(
+            _breach(current_value=95.35), _EQP, "CVD", _make_settings(),
+            NotifyChannel(cooldown_minutes=30), window_minutes=15,
+        ).variables["CurrentValue"] == "95.4"
+        assert build_alert_request(
+            _breach(current_value=88.96), _EQP, "CVD", _make_settings(),
+            NotifyChannel(cooldown_minutes=30), window_minutes=15,
+        ).variables["CurrentValue"] == "89.0"
+
     def test_grafana_url_built(self):
         req = build_alert_request(
             _breach(), _EQP, "CVD", _make_settings(),
@@ -229,6 +248,40 @@ class TestRenderedBody:
         )
         assert req.rendered_body == "<p>EQP01 92.5</p>"
         assert req.title == "[EARS] CPU WARNING"
+
+    def test_scalar_current_value_rounded_in_body(self):
+        # @CurrentValue 스칼라도 1자리 반올림되어 본문에 표시
+        s = _make_settings(rms_custom_body_enabled=True)
+        template = {"html": "<p>@CurrentValue</p>", "title": "T"}
+        b = _breach(eqp_id="EQP01", current_value=95.34567)
+        req = build_alert_request(
+            b, _EQP, "CVD", s, NotifyChannel(cooldown_minutes=30),
+            window_minutes=15, members=[b], eqp_lookup={"EQP01": _EQP},
+            timestamp=self._TS, template=template,
+        )
+        assert req.rendered_body == "<p>95.3</p>"
+
+    def test_row_current_value_rounded_in_body(self):
+        # @Row.CurrentValue: 그룹 표 각 행의 현재값도 1자리 반올림 (사용자 요청)
+        s = _make_settings(rms_custom_body_enabled=True)
+        template = {
+            "html": "<table><!--@EachEquipment--><tr><td>@Row.CurrentValue</td></tr>"
+                    "<!--@EndEachEquipment--></table>",
+            "title": "T",
+        }
+        b1 = _breach(eqp_id="EQP01", current_value=88.96)
+        b2 = _breach(eqp_id="EQP02", severity="CRITICAL", current_value=95.34567)
+        req = build_alert_request(
+            b1, _EQP, "CVD", s, NotifyChannel(cooldown_minutes=30, group_by="model"),
+            window_minutes=15, members=[b1, b2],
+            eqp_lookup={"EQP01": _EQP, "EQP02": _EQP},
+            timestamp=self._TS, affected_equipment=["EQP01", "EQP02"],
+            template=template,
+        )
+        body = req.rendered_body
+        assert "<td>95.3</td>" in body  # 95.34567 → 95.3
+        assert "<td>89.0</td>" in body  # 88.96 → 89.0 (둘째자리 6 → 올림)
+        assert "95.34567" not in body and "88.96" not in body
 
     def test_template_miss_uses_default_body(self):
         s = _make_settings(rms_custom_body_enabled=True)

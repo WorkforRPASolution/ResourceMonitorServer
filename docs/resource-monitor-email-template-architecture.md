@@ -195,7 +195,7 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 | `@Category` | `breach.category.upper()` (alert_builder.py:72) | `CPU` | `[@Category]` → `[CPU]` | 기존 |
 | ~~`@Metric`~~ | **v1 미포함(후속)** — 정제 지표명의 데이터 소스가 코드에 없음(Measure에 label 없음, breach에 measure id 없음) | — | 지표 식별은 `@Fact` 사용 | 보류 |
 | `@Fact` | `breach.fact` 원복합값 (threshold.py:37) | `cpu_usage.total_used_pct` | `@Fact` → `cpu_usage.total_used_pct` | 기존(=현 MetricName). **v1 지표 토큰** |
-| `@CurrentValue` | `str(breach.current_value)` (alert_builder.py:85) | `91.2` | `현재 @CurrentValue%` → `현재 91.2%` | 기존(None→`-`) |
+| `@CurrentValue` | `_round_display(breach.current_value)` (alert_builder.py) | `91.2` | `현재 @CurrentValue%` → `현재 91.2%` | **소수 1자리 반올림**(None→`-`) |
 | `@Threshold` | `str(breach.threshold_value)` (alert_builder.py:86) | `85.0` | `임계 @Threshold` → `임계 85.0` | 기존 |
 | `@Operator` | `breach.op` (threshold.py:39) | `>=` | `@Operator @Threshold` → `>= 85.0` | **신규(파생)** |
 | `@WindowMin` | `window_minutes` (engine.py:52) | `30` | `최근 @WindowMin분` → `최근 30분` | 기존 |
@@ -220,7 +220,7 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 |---|---|---|
 | `@Row.Index` | 1-기반 행 번호(파생) | `1`, `2`, `3` |
 | `@Row.EqpId` | `member.breach.eqp_id` | `EQP002` |
-| `@Row.CurrentValue` | `member.breach.current_value` | `88.9` (None→`-`) |
+| `@Row.CurrentValue` | `_round_display(member.breach.current_value)` | `88.9` (소수 1자리 반올림, None→`-`) |
 | `@Row.Threshold` | `member.breach.threshold_value` | `85.0` |
 | `@Row.Severity` | `member.breach.severity` | `WARNING` |
 | `@Row.Metric` / `@Row.Fact` | `member.breach.fact` | `mem.total_used_pct` |
@@ -235,7 +235,7 @@ EmailAlertClient.send_alert    getEmailBody(p,m,code,sub)  ← EMAIL_TEMPLATE_RE
 - **텍스트 토큰**: `html.escape` 적용 — `& < > " '` 변환. 예: `@Fact`가 `a<b&c`면 → `a&lt;b&amp;c`(마크업 안 깨짐).
 - **URL 토큰(`@GrafanaUrl`)**: `href`/`src` 속성에만 사용, **URL/속성 escape**(텍스트 escape와 다름). 무차별 `&`→`&amp;`는 `?var-...=...&var-...` 링크를 깨뜨리므로 컨텍스트 분리 필수(§5-②).
 - **None/누락**: `-`(또는 빈 문자열)로 치환 — `str(None)="None"` 노출 방지.
-- **숫자(확정)**: `str(value)` **그대로**(재포맷·반올림 없음 — 현행 `alert_builder.py:85` 동작 유지). `threshold_value`가 str(trend 등)이면 그 문자열 verbatim. None은 위 규칙대로 `-`. → 렌더러는 원시 값을 받아 포맷팅을 1곳에서 수행(사전 `str()` 금지).
+- **숫자**: 렌더러는 받은 값을 `str(value)` **그대로** 출력(렌더러 재포맷 없음). 단 **현재값(`@CurrentValue`/`@Row.CurrentValue`/legacy `CurrentValue`)은 소스(`alert_builder._round_display`)에서 소수 1자리로 반올림**(round-half-up, 예 95.34→95.3·88.96→89.0)해 넣는다(2026-06-15 운영 요청). `threshold_value`는 반올림 안 함(str/trend면 verbatim). None은 `-`.
 - **단일 치환**: RMS가 1회만 치환 → Akka는 renderedBody에 대해 **`@HttpWebServerAddress` 1개만** 치환(이미지 URL용), 그 외 재치환 0(충돌 회피, D2).
 
 ### 7.3 장비 반복 블록 — 기능 명칭 & 문법
