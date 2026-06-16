@@ -310,7 +310,7 @@ Test-NetConnection -ComputerName <es-host> -Port 9200
 ### ES: `not Elasticsearch ... unknown product` / `GET /` 가 302
 원인: `MONITOR_ES_HOSTS` 가 **ES API(9200)가 아니라 Kibana/포털**을 가리키거나 앞단 프록시가 로그인으로 302 함 → elasticsearch-py 가 "정품 ES 아님"으로 판정해 부팅 실패(`es_startup_ping_failed`).
 - `curl -i http://<host>:9200/` 로 확인: 정상 ES 면 `tagline: "You Know, for Search"` JSON. `Location: /login...` 302 면 Kibana/게이트웨이임.
-- 운영 ES 는 보통 **클러스터 내부 DNS**(예 `elasticsearch.observability:9200`, 인증 `elastic`)라 PC 에서 직접 안 닿습니다. `kubectl -n observability port-forward svc/elasticsearch 9200:9200` 후 `MONITOR_ES_HOSTS=http://localhost:9200` + `MONITOR_ES_USERNAME=elastic` / `MONITOR_ES_PASSWORD=<비번>` 설정. (실제 주소는 `k8s/configmap.yaml` 참고)
+- 운영 ES 는 보통 **클러스터 내부 DNS**(예 `rtm-elasticsearch-coordinating-only.ears-base:9200`, 인증 `elastic`)라 PC 에서 직접 안 닿습니다. `kubectl -n ears-base port-forward svc/rtm-elasticsearch-coordinating-only 9200:9200` 후 `MONITOR_ES_HOSTS=http://localhost:9200` + `MONITOR_ES_USERNAME=elastic` / `MONITOR_ES_PASSWORD=<비번>` 설정. (실제 주소는 `k8s/configmap.yaml` 참고)
 
 ### MongoDB 인증 실패
 ```

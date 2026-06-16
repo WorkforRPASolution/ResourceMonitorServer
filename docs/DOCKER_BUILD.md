@@ -181,6 +181,12 @@ docker run -d -p 8000:8000 --env-file .env resource-monitor-server:{버전}
 
 모든 설정은 `MONITOR_` 접두사 환경변수다(`src/config/settings.py` 의 `env_prefix="MONITOR_"`). 자격증명(비밀번호·URI)은 여기 두지 말고 Secret(§5.2)으로.
 
+> **⚠️ 네임스페이스 토폴로지 & DNS 규칙** (이 환경 기준 — 배포 시 가장 자주 막히는 지점, 실패 증상은 §6 "기동 인프라 연결")
+> - RMS 파드는 **`ears-rtm`** 에서 돌고, 인프라는 흩어져 있다: **ES/ZK/Redis/Mongo = `ears-base`**, **Email(Akka) = `ears-rtm`**.
+> - **다른 ns 의존성은 FQDN `<svc>.<ns>.svc.cluster.local` 필수**(짧은 이름은 같은 ns 에서만 resolve). 같은 ns(Email)는 짧은 이름 OK.
+> - **StatefulSet(ZK)의 per-pod DNS 는 헤드리스 서비스(`*-headless`)에서만** 나온다 — NodePort/ClusterIP 서비스로는 NXDOMAIN.
+> - URL 포트는 **Service 포트**다(컨테이너 포트 아님). 실제 이름·포트: `kubectl get svc,pods -n <ns> | grep -i <infra>`.
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -190,7 +196,8 @@ metadata:
     app: resource-monitor-server
 data:
   # ----- Elasticsearch (운영 7.11.x) -----
-  MONITOR_ES_HOSTS: "http://elasticsearch.observability:9200"
+  # ⚠️ cross-ns(ES=ears-base) → FQDN 필수
+  MONITOR_ES_HOSTS: "http://rtm-elasticsearch-coordinating-only.ears-base.svc.cluster.local:9200"
   MONITOR_ES_USERNAME: "elastic"
   MONITOR_ES_USE_SSL: "false"
   MONITOR_ES_REQUEST_TIMEOUT: "30"
@@ -201,7 +208,8 @@ data:
   MONITOR_MONGO_DB: "EARS"
 
   # ----- Zookeeper 3.5.5 -----
-  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper:2181,zookeeper-1.zookeeper:2181,zookeeper-2.zookeeper:2181"
+  # ⚠️ per-pod DNS 는 *헤드리스* 서비스(zookeeper-headless)에서만 — NodePort 서비스로는 NXDOMAIN
+  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper-headless.ears-base.svc.cluster.local:2181,zookeeper-1.zookeeper-headless.ears-base.svc.cluster.local:2181,zookeeper-2.zookeeper-headless.ears-base.svc.cluster.local:2181"
   MONITOR_ZK_ROOT_PATH: "/resource-monitor"
   MONITOR_ZK_SESSION_TIMEOUT: "30"
   # SASL 미사용 시 빈 값 (Secret이 빈 mechanism을 주입)
@@ -219,7 +227,8 @@ data:
   # MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
 
   # ----- Email API (Akka HttpWebServer) -----
-  MONITOR_EMAIL_API_URL: "http://httpwebserver.notification:8080/EmailNotify"
+  # 같은 ns(ears-rtm)라 짧은 이름. ⚠️ 포트는 Service 포트(80), 컨테이너 포트(8080) 아님
+  MONITOR_EMAIL_API_URL: "http://http-web-server:80/EmailNotify"
   MONITOR_EMAIL_API_TIMEOUT: "10"
 
   # ----- Grafana (alert body 링크용) -----
@@ -232,7 +241,7 @@ data:
 
   # ----- Logging -----
   MONITOR_LOG_LEVEL: "INFO"
-  MONITOR_LOG_FORMAT: "json"
+  MONITOR_LOG_FORMAT: "console"   # json(구조화 수집용) 또는 console(사람이 읽는 평문)
 ```
 
 코드에는 있으나 위 ConfigMap 에는 **생략(=기본값 사용)된 선택 키**들이 있다. 운영 중 조정이 필요할 때만 `data:` 에 추가한다(아래 값은 모두 코드 기본값):
@@ -264,8 +273,9 @@ metadata:
     app: resource-monitor-server
 type: Opaque
 stringData:
-  # Mongo 자격증명 — URI에 user:password 포함
-  MONITOR_MONGO_URI: "mongodb://USER:CHANGE_ME@mongodb.ears:27017"
+  # Mongo 자격증명 — URI에 user:password 포함. 레플리카셋 + authSource(계정 DB, 보통 admin) + FQDN.
+  # authSource 불일치 시 code 18 AuthenticationFailed. 비번 특수문자는 URL 인코딩(@→%40).
+  MONITOR_MONGO_URI: "mongodb://USER:CHANGE_ME@maindb-mongodb-primary-0.maindb-mongodb-headless.ears-base.svc.cluster.local:27017,maindb-mongodb-secondary-0.maindb-mongodb-headless.ears-base.svc.cluster.local:27017/EARS?replicaSet=rs0&authSource=admin"
 
   # ES basic auth password
   MONITOR_ES_PASSWORD: "CHANGE_ME"
@@ -629,6 +639,15 @@ curl -s    localhost:8000/metrics | head   # Prometheus 텍스트
   운영 노드가 x86_64 면 **운영과 같은 아키텍처의 빌드 서버**에서 만들 것(또는
   `docker build --platform linux/amd64`).
 - **`MONITOR_DEBUG_READ_ONLY`** — 운영 configmap 에 절대 넣지 말 것(분산 조정 비활성화).
+
+**기동(런타임) 인프라 연결 실패** — RMS 는 부팅 시 **ES→Mongo→Redis→Email→ZK** 를 순서대로 ping 하고, 하나라도 실패하면 "떠는 있는데 감지 못 하는" 상태를 막으려 **의도적으로 종료**한다(`init_infra` fail-fast). 로그의 `startup_phase_failed error=...` 가 어느 인프라인지 알려준다. (네임스페이스 토폴로지는 §5.1 콜아웃 참고.)
+
+- **`Name or service not known`(Errno -2) / `Temporary failure in name resolution`(Errno -3)** — 이름 해석 실패. RMS(`ears-rtm`)와 **다른 ns 의 인프라**(ES/ZK/Redis/Mongo=`ears-base`)는 짧은 이름으로 안 풀린다 → **FQDN `<svc>.<ns>.svc.cluster.local` 필수**(같은 ns 인 Email 만 짧은 이름 OK). 실제 이름: `kubectl get svc,pods -n <ns> | grep -i <infra>`.
+- **ZK `zookeeper-0.zookeeper... NXDOMAIN`** — StatefulSet 의 per-pod 안정 DNS 는 **헤드리스 서비스**(ClusterIP: None, 보통 `*-headless`)에서만 나온다. NodePort/ClusterIP 서비스로는 per-pod 이름이 없다 → `zookeeper-0.zookeeper-headless.<ns>.svc.cluster.local:2181`. (`kubectl get svc -n <ns> | grep -i zoo` 로 headless 명 확인.)
+- **Email `email_startup_health_check_failed`** — health check 는 `MONITOR_EMAIL_API_URL` 로 HEAD 를 보내 *아무 응답*(404/405 포함)이면 정상으로 친다 → 실패는 **도달 불가**(DNS/포트/엔드포인트). ⚠️ 포트는 **Service 포트**여야 한다(`kubectl get svc` 의 `PORT(S)` 가 `80:50004/TCP` 면 **80**, 컨테이너 8080 아님). 확인: `kubectl run --rm -it curl --image=curlimages/curl -n <ns> -- curl -sv -I http://<svc>:<port>/EmailNotify`.
+- **Mongo `Authentication failed` (code 18 AuthenticationFailed)** — 연결은 됐고 자격증명/인증DB 가 틀림. `MONITOR_MONGO_URI` 에 **`authSource`**(계정이 만들어진 DB, 보통 `admin`) 추가 — 경로에 `/EARS` 만 있고 authSource 없으면 EARS 로 인증 시도해 실패. 레플리카셋이면 호스트 콤마나열 + `?replicaSet=<rs>`, 비번 특수문자는 URL 인코딩(`@`→`%40`).
+- **Redis Sentinel `No master found ... Client sent AUTH, but no password is set`** — 센티널에 비번이 없는데 AUTH 를 보냄. RMS 는 `MONITOR_REDIS_SENTINEL_PASSWORD` 가 비면 **센티널엔 AUTH 미전송**(데이터 비번 폴백 안 함). redis-ha 의 auth=true(데이터)+sentinel.auth=false(센티널) 구성이면 `MONITOR_REDIS_PASSWORD` 만 채우고 센티널 비번은 비울 것. (반대로 `Authentication required` 는 데이터 노드 비번 누락 → `MONITOR_REDIS_PASSWORD` 설정.)
+- **ConfigMap/Secret 변경이 반영 안 됨** — `envFrom`(configMapRef/secretRef)은 파드 기동 시 env 로 주입되므로, 값 변경 후 **`kubectl rollout restart deploy/resource-monitor-server`** 필요(볼륨 마운트와 달리 자동 갱신 X).
 
 ---
 

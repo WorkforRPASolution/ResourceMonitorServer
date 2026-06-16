@@ -6,6 +6,7 @@ metadata:
     app: resource-monitor-server
 data:
   # ----- Elasticsearch (운영 7.11.x) -----
+  # ⚠️ RMS(ears-rtm)와 다른 ns(ears-base) → 짧은 이름 불가, FQDN(.<ns>.svc.cluster.local) 필수.
   MONITOR_ES_HOSTS: "http://rtm-elasticsearch-coordinating-only.ears-base.svc.cluster.local:9200"
   MONITOR_ES_USERNAME: "elastic"
   MONITOR_ES_USE_SSL: "false"
@@ -17,7 +18,10 @@ data:
   MONITOR_MONGO_DB: "EARS"
 
   # ----- Zookeeper 3.5.5 -----
-  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper.ears-base.svc.cluster.local:2181,zookeeper-1.zookeeper.ears-base.svc.cluster.local:2181,zookeeper-2.zookeeper.ears-base.svc.cluster.local:2181"
+  # ⚠️ StatefulSet per-pod DNS 는 *헤드리스* 서비스(zookeeper-headless)에서만 나온다.
+  #     NodePort/ClusterIP 서비스(zookeeper)로는 zookeeper-0.zookeeper... 가 NXDOMAIN.
+  #     형식: <파드명>.<헤드리스서비스명>.<ns>.svc.cluster.local:2181
+  MONITOR_ZK_HOSTS: "zookeeper-0.zookeeper-headless.ears-base.svc.cluster.local:2181,zookeeper-1.zookeeper-headless.ears-base.svc.cluster.local:2181,zookeeper-2.zookeeper-headless.ears-base.svc.cluster.local:2181"
   MONITOR_ZK_ROOT_PATH: "/resource-monitor"
   MONITOR_ZK_SESSION_TIMEOUT: "30"
   # SASL 미사용 시 빈 값 (Secret이 빈 mechanism을 주입)
@@ -37,7 +41,9 @@ data:
   # MONITOR_REDIS_URL: "redis://redis.cache:6379/5"
 
   # ----- Email API (Akka HttpWebServer) -----
-  MONITOR_EMAIL_API_URL: "http://httpwebserver.notification:8080/EmailNotify"
+  # 같은 ns(ears-rtm)라 짧은 이름. ⚠️ 포트는 *Service* 포트(80)다 — 컨테이너 포트(8080) 아님
+  #     (kubectl get svc 의 PORT(S) 가 "80:50004/TCP" → 80 을 쓴다).
+  MONITOR_EMAIL_API_URL: "http://http-web-server:80/EmailNotify"
   MONITOR_EMAIL_API_TIMEOUT: "10"
 
   # ----- Grafana (alert body 링크용) -----
