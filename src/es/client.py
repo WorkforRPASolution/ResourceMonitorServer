@@ -119,7 +119,12 @@ class ESClient:
             kwargs["verify_certs"] = True
         self._client = AsyncElasticsearch(**kwargs)
         if not await self.ping():
-            raise RuntimeError("es_startup_ping_failed")
+            # fail-fast 진단: 어느 ES 인스턴스/설정 문제인지 즉시 식별 가능하도록
+            # hosts 를 구조화 로그 + 예외 메시지(traceback 전파)에 모두 남긴다.
+            logger.error("es_connect_failed", hosts=self._settings.es_hosts)
+            raise RuntimeError(
+                f"es_startup_ping_failed: hosts={self._settings.es_hosts}"
+            )
 
     async def ping(self) -> bool:
         """True if the cluster responds. Never raises."""

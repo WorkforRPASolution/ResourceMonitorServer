@@ -440,3 +440,36 @@ class TestRenderedBodyDispatch:
         deps.template_repo.find_template.assert_not_awaited()
         alert = deps.email_client.send_alert.await_args.args[0]
         assert alert.rendered_body is None
+
+
+class TestContextPropagation:
+    """run_analysis 가 process/interval 을 contextvars 에 바인딩 → 한 분석 사이클의
+    모든 로그(엔진 내부 + send_alert 의 email_send_* 등)가 도메인 키를 자동 보유한다.
+
+    capture_logs() 는 merge_contextvars 를 우회하므로, 바인딩 사실은 dep side-effect
+    에서 structlog.contextvars.get_contextvars() 를 직접 읽어 검증한다.
+    """
+
+    async def test_process_bound_during_dispatch(self):
+        captured: dict = {}
+        deps = _make_deps(_cpu_profile())
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 92.5))
+
+        async def _capture_ctx(_request):
+            captured.update(structlog.contextvars.get_contextvars())
+            return True
+
+        deps.email_client.send_alert = AsyncMock(side_effect=_capture_ctx)
+
+        await _engine(deps).run_analysis("CVD", 5)
+
+        assert captured.get("process") == "CVD"
+        assert captured.get("interval_minutes") == 5
+
+    async def test_context_does_not_leak_after_run(self):
+        deps = _make_deps(_cpu_profile())
+        deps.es.client.search = AsyncMock(return_value=_es_max("EQP01", 50.0))
+        await _engine(deps).run_analysis("CVD", 5)
+        ctx = structlog.contextvars.get_contextvars()
+        assert "process" not in ctx
+        assert "interval_minutes" not in ctx

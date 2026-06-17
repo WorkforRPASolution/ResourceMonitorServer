@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import structlog
 
 from src.alert.email_client import EmailAlertClient
 from src.alert.models import EmailAlertRequest
@@ -211,6 +212,76 @@ class TestSendAlertErrorCases:
             200, {"message": "missing result field"}
         )
         assert await client.send_alert(sample_request) is False
+
+
+@pytest.mark.unit
+class TestSendAlertFailureLogLevel:
+    """모든 알림 전달 실패는 ERROR 레벨이어야 한다(미전달=actionable).
+
+    cooldown은 발송 성공 시에만 설정(engine._dispatch)되므로 6개 실패 경로가
+    모두 다음 틱 재시도로 동등하다 — 레벨이 갈리면 `level:error` 경보가
+    timeout/app_failure를 놓치는 사일런트 갭이 생긴다.
+    """
+
+    async def test_timeout_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.side_effect = httpx.TimeoutException("slow")
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_timeout")
+        assert evt["log_level"] == "error"
+
+    async def test_app_failure_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(
+            200, {"result": "Fail", "message": "queue full"}
+        )
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_app_failure")
+        assert evt["log_level"] == "error"
+
+    async def test_connect_error_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.side_effect = httpx.ConnectError("refused")
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_connect_error")
+        assert evt["log_level"] == "error"
+
+    async def test_http_error_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = _mock_response(503, {"result": "error"})
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_http_error")
+        assert evt["log_level"] == "error"
+
+    async def test_invalid_response_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "not json"
+        resp.raise_for_status = MagicMock()
+        resp.json.side_effect = ValueError("not json")
+        client._http_client = AsyncMock()
+        client._http_client.post.return_value = resp
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_invalid_response")
+        assert evt["log_level"] == "error"
+
+    async def test_not_connected_logs_error(self, settings, sample_request):
+        client = EmailAlertClient(settings)
+        client._http_client = None
+        with structlog.testing.capture_logs() as cap:
+            assert await client.send_alert(sample_request) is False
+        evt = next(e for e in cap if e["event"] == "email_send_not_connected")
+        assert evt["log_level"] == "error"
 
 
 @pytest.mark.unit

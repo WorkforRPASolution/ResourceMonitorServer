@@ -2,6 +2,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import structlog
 from elasticsearch.exceptions import NotFoundError
 
 from src.config.settings import AppSettings
@@ -126,6 +127,20 @@ class TestESClientConnect:
             # connect()-raised error is the same RuntimeError.
             with pytest.raises(RuntimeError, match="es_startup_ping_failed"):
                 await client.connect()
+
+    async def test_connect_failure_logs_hosts(self, settings):
+        """기동 실패 시 어느 ES 인스턴스/설정 문제인지 즉시 식별 가능해야 한다
+        (fail-fast 진단) — es_connect_failed 이벤트가 hosts 를 담는다."""
+        client = ESClient(settings)
+        with patch("src.es.client.AsyncElasticsearch") as mock_cls:
+            mock_cls.return_value = _mock_es_instance(ping_result=False)
+            with structlog.testing.capture_logs() as cap:
+                with pytest.raises(RuntimeError):
+                    await client.connect()
+        evts = [e for e in cap if e["event"] == "es_connect_failed"]
+        assert evts, "es_connect_failed not logged"
+        assert evts[0]["log_level"] == "error"
+        assert evts[0]["hosts"] == settings.es_hosts
 
 
 @pytest.mark.unit

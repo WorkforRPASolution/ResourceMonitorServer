@@ -125,6 +125,17 @@ class ZKClient:
                 raise TimeoutError(
                     f"zk_startup_budget_exceeded ({budget_sec}s)"
                 ) from e
+            except Exception as e:
+                # Non-timeout kazoo.start() failures (AuthFailed, ConnectionRefused,
+                # socket errors). Log hosts/error_type for fail-fast diagnosis, then
+                # re-raise so init_infra's rollback runs as before.
+                logger.error(
+                    "zk_connect_failed",
+                    hosts=self._settings.zk_hosts,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
+                raise
         finally:
             # wait=False: on timeout we leak the daemon thread on purpose;
             # on success the thread has already returned.

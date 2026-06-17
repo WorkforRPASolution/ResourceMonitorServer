@@ -66,7 +66,14 @@ class AnalysisEngine:
         """Public entry: lock the process, then run every rule whose
         ``interval_minutes`` matches this tick, across all active equipment."""
         async with self._deps.zk_lock.acquire(process), self._es_semaphore:
-            return await self._do_analysis(process, interval_minutes)
+            # Bind domain keys for the whole tick so every downstream log
+            # (engine internals + send_alert's email_send_* etc.) is traceable
+            # to its process/interval. bound_contextvars auto-restores on exit,
+            # preventing leakage across ticks (APScheduler reuses the task).
+            with structlog.contextvars.bound_contextvars(
+                process=process, interval_minutes=interval_minutes
+            ):
+                return await self._do_analysis(process, interval_minutes)
 
     async def _do_analysis(self, process: str, interval_minutes: int) -> AnalysisResult:
         now = datetime.now(UTC)

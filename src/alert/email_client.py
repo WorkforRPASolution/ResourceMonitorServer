@@ -142,7 +142,7 @@ class EmailAlertClient:
             resp.raise_for_status()
             data = resp.json()
         except httpx.TimeoutException as e:
-            logger.warning("email_send_timeout", error=str(e))
+            logger.error("email_send_timeout", error=str(e))
             self._record_outbox_failure(request, "timeout", str(e))
             return False
         except httpx.ConnectError as e:
@@ -171,7 +171,7 @@ class EmailAlertClient:
         if isinstance(result, str) and result.lower() == _SUCCESS_RESULT:
             logger.info("email_send_ok", message=message)
             return True
-        logger.warning(
+        logger.error(
             "email_send_app_failure", result=result, message=message
         )
         self._record_outbox_failure(

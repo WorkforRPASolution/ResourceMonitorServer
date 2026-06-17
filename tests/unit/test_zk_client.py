@@ -11,6 +11,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import structlog
 
 from src.config.settings import AppSettings
 from src.distributed.zk_client import ZKClient
@@ -88,6 +89,24 @@ class TestZKClientConnect:
             await client.connect()
         instance.start.assert_called_once()
         instance.ensure_path.assert_called_once_with("/resource-monitor")
+
+    async def test_connect_non_timeout_error_logs_hosts(self, settings):
+        """kazoo.start() 의 비-타임아웃 오류(AuthFailed/ConnectionRefused 등)도
+        hosts/error_type 와 함께 로깅되어야 한다 — 기존엔 TimeoutError 만 잡아
+        그 외 오류는 hosts 없이 infra.py 로 전파되던 갭."""
+        client = ZKClient(settings)
+        with patch("src.distributed.zk_client.KazooClient") as mock_cls:
+            instance = MagicMock()
+            instance.start.side_effect = RuntimeError("auth failed")
+            mock_cls.return_value = instance
+            with structlog.testing.capture_logs() as cap:
+                with pytest.raises(RuntimeError, match="auth failed"):
+                    await client.connect()
+        evts = [e for e in cap if e["event"] == "zk_connect_failed"]
+        assert evts, "zk_connect_failed not logged"
+        assert evts[0]["log_level"] == "error"
+        assert evts[0]["hosts"] == "zk1:2181"
+        assert evts[0]["error_type"] == "RuntimeError"
 
 
 # ----------------------------------------------------------------------
