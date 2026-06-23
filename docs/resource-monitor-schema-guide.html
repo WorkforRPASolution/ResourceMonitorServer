@@ -713,7 +713,7 @@
 
   <h3>제약 (§6.4)</h3>
   <ul>
-    <li><b>schedule/interval override는 process 레벨까지만.</b> 스케줄러는 process 레벨 effective의 interval 집합으로 <code>(process, interval)</code> job을 등록합니다. model/eqp overlay가 process에 <b>없는 새 interval</b>을 도입하면 API가 <b>422로 거부</b>합니다(<code>_check_interval_scope</code>) — 안 그러면 그 rule이 스케줄되지 않아 silent lost breach. 임계/value override는 eqp 레벨까지 가능합니다.</li>
+    <li><b>interval(cadence)도 임계/value처럼 모든 scope에서 override 가능.</b> 스케줄러는 <code>(process, interval)</code> job을 등록하되 interval 집합을 전역·공정·모델·장비 <b>모든 scope</b>에서 수집(<code>get_scheduling_intervals</code>)하므로, model/eqp overlay가 도입한 새 interval도 스케줄·평가됩니다.</li>
     <li>참조 무결성은 <b>합성된 effective profile</b>에서 검증합니다(<a href="#s9">§9</a>).</li>
   </ul>
   <div class="note danger"><span class="tag">❌ 절대 금지</span> 특정 장비 하나를 바꾸려고 <b>전역 설정을 통째로 복사</b>하지 마세요(함정 <a href="#s12">P9</a>). overlay엔 바꿀 measure/rule만 담고 나머지는 상속하게 둡니다 — 그래야 전역 변경이 자동 전파되고 드리프트가 없습니다.</div>
@@ -937,7 +937,7 @@ window.__SCHEMA_GUIDE_COVERAGE = [
   "measure id 유일","시간축 fact","bucketing.seconds × points","baseline_dev",
   "ALLOWED_OPS","interval_minutes ≤","count_min ≥ 1","동일 proc","dead fact",
   // scope cascade
-  "sparse overlay","통째로 교체","process 레벨까지만","_check_interval_scope",
+  "sparse overlay","통째로 교체",
   // EARS category 전부 + 대표 metric
   "cpu","memory","disk","network","temperature","fan","voltage",
   "motherboard_temp","gpu","storage_smart","storage_health","process_watch",

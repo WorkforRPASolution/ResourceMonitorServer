@@ -309,9 +309,11 @@ class TestItemCrud:
             notify={"default": NotifyChannel(cooldown_minutes=30)},
         )
 
-    def test_model_overlay_new_interval_rejected(self, client, repo):
-        # interval (cadence) is schedulable only at process level; a model-scope
-        # rule with a NEW interval would never be scheduled → reject (SCHEMA §6.4).
+    def test_model_overlay_new_interval_allowed(self, client, repo):
+        # cadence override is no longer process-level-only: the scheduler reads
+        # deep-scope intervals too (get_scheduling_intervals), so a model-scope
+        # rule with a new interval is scheduled & evaluated → allowed.
+        # (API↔engine alignment — docs/rms-profile-registration-rules-decision-2026-06-19.md)
         model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
         repo.find_by_scope.return_value = model_overlay
         repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
@@ -321,8 +323,8 @@ class TestItemCrud:
                      "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
         }
         r = client.post("/profiles/rules", json=body)
-        assert r.status_code == 422
-        repo.replace_with_version.assert_not_awaited()
+        assert r.status_code == 200
+        repo.replace_with_version.assert_awaited_once()
 
     def test_toggle_rule_enabled_via_patch(self, client, repo):
         # disable a rule through the existing PATCH endpoint (whole-rule replace)
@@ -352,49 +354,9 @@ class TestItemCrud:
         assert r.status_code == 422
         repo.replace_with_version.assert_not_awaited()
 
-    def test_model_overlay_disabled_new_interval_allowed(self, client, repo):
-        # a DISABLED rule introducing a new cadence is never scheduled, so it is
-        # allowed to be stored (the §6.4 check fires when it is enabled).
-        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
-        repo.find_by_scope.return_value = model_overlay
-        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
-        body = {
-            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
-            "rule": {"id": "cpu_fast", "interval_minutes": 7, "severity": "CRITICAL",
-                     "enabled": False,
-                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
-        }
-        r = client.post("/profiles/rules", json=body)
-        assert r.status_code == 200
-        repo.replace_with_version.assert_awaited_once()
-
-    def test_disabled_process_rule_interval_not_schedulable(self, client, repo):
-        # a DISABLED process-level rule at interval 9 is never scheduled, so it
-        # does NOT make interval 9 available to deeper scopes; an eqp overlay
-        # adding an ENABLED rule at 9 must be rejected (silent lost breach).
-        process_doc = MonitorProfile(
-            scope=Scope(process="CVD"),
-            measures=[Measure(id="cpu", category="cpu", metric="total_used_pct",
-                              window_minutes=15, facts=[Fact(type="max")])],
-            rules=[Rule(id="cpu_off", interval_minutes=9, severity="WARNING",
-                        enabled=False,
-                        when=[Condition(fact="cpu.max", op=">=", value=80)])],
-            notify={"default": NotifyChannel(cooldown_minutes=30)},
-        )
-        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
-        repo.find_by_scope.return_value = model_overlay
-        repo.collect_scope_docs.return_value = [process_doc, model_overlay]
-        body = {
-            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
-            "rule": {"id": "cpu_fast", "interval_minutes": 9, "severity": "CRITICAL",
-                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
-        }
-        r = client.post("/profiles/rules", json=body)
-        assert r.status_code == 422
-        repo.replace_with_version.assert_not_awaited()
-
     def test_model_overlay_existing_interval_ok(self, client, repo):
-        # same cadence as the process-level schedule → allowed
+        # a model-scope rule reusing a cadence already present upstream → allowed
+        # (now just a normal write; no longer a special cadence-locality case).
         model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
         repo.find_by_scope.return_value = model_overlay
         repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
@@ -406,6 +368,54 @@ class TestItemCrud:
         r = client.post("/profiles/rules", json=body)
         assert r.status_code == 200
         repo.replace_with_version.assert_awaited_once()
+
+    def test_deep_scope_standalone_self_contained_allowed(self, client, repo):
+        # R3: a deep-scope (P/M/E) profile registers standalone with no parent
+        # docs, as long as it is self-contained (defines its own measure + notify).
+        # Scheduler/engine already handle deep-only docs (see
+        # test_get_scheduling_intervals_eqp_only_doc).
+        repo.collect_scope_docs.return_value = []  # no */*/* or P/*/* parents
+        body = {
+            "scope": {"process": "CVD", "model": "M", "eqpId": "E1"},
+            "measures": [{"id": "cpu", "category": "cpu", "metric": "total_used_pct",
+                          "window_minutes": 15, "facts": [{"type": "max"}]}],
+            "rules": [{"id": "cpu_warn", "interval_minutes": 10, "severity": "WARNING",
+                       "when": [{"fact": "cpu.max", "op": ">=", "value": 80}]}],
+            "notify": {"default": {"cooldown_minutes": 30}},
+        }
+        r = client.post("/profiles", json=body)
+        assert r.status_code == 201
+        repo.create.assert_awaited_once()
+
+    def test_deep_scope_interval_exceeds_window_still_rejected(self, client, repo):
+        # C2 stays: interval > referenced measure window is rejected even at deep
+        # scope (validate_effective), independent of the removed cadence guard.
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "cpu_slow", "interval_minutes": 99, "severity": "CRITICAL",
+                     "when": [{"fact": "cpu.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 422
+        repo.replace_with_version.assert_not_awaited()
+
+    def test_deep_scope_dangling_reference_still_rejected(self, client, repo):
+        # C1 stays: a rule referencing a measure absent from both the overlay and
+        # every parent is rejected even at deep scope (validate_effective).
+        model_overlay = MonitorProfile(scope=Scope(process="CVD", eqp_model="M"), rules=[])
+        repo.find_by_scope.return_value = model_overlay
+        repo.collect_scope_docs.return_value = [self._process_doc(), model_overlay]
+        body = {
+            "scope": {"process": "CVD", "model": "M"}, "expected_version": 1,
+            "rule": {"id": "ghost_rule", "interval_minutes": 5, "severity": "CRITICAL",
+                     "when": [{"fact": "ghost.max", "op": ">=", "value": 95}]},
+        }
+        r = client.post("/profiles/rules", json=body)
+        assert r.status_code == 422
+        repo.replace_with_version.assert_not_awaited()
 
     def test_item_write_409_on_stale_version(self, client, repo):
         repo.find_by_scope.return_value = _overlay()

@@ -119,49 +119,10 @@ async def _validate_composed(repo: Any, overlay: MonitorProfile) -> None:
     errors = validate_effective(effective)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
-    _check_interval_scope(parents, overlay, effective)
     warnings = lint_effective(effective)
     if warnings:
         logger.warning(
             "profile_write_lint", scope=overlay.scope.to_mongo(), warnings=warnings
-        )
-
-
-def _check_interval_scope(
-    parents: list[MonitorProfile], overlay: MonitorProfile, effective: MonitorProfile
-) -> None:
-    """Reject a model/eqp-level overlay that introduces a rule with an evaluation
-    interval not present at the process level (SCHEMA §6.4).
-
-    The scheduler reads the (process,*,*) effective profile to decide the set of
-    cadences; a new interval introduced deeper in the cascade would never be
-    scheduled — a silent lost breach. Interval (cadence) is therefore overridable
-    only down to the process level (thresholds/values may still be overridden per
-    eqp). Global and process-level writes are exempt: they *are* what's scheduled.
-
-    Only *enabled* rules are considered on both sides: a disabled rule is never
-    scheduled (and never evaluated), so introducing one with a novel cadence is
-    harmless — the check re-runs and fires the moment that rule is enabled.
-    """
-    if overlay.scope.eqp_model == "*" and overlay.scope.eqp_id == "*":
-        return
-    process_docs = sorted(
-        [d for d in parents if _rank(d.scope) <= 1], key=lambda p: _rank(p.scope)
-    )
-    process_eff = fold_profiles(process_docs, Scope(process=overlay.scope.process))
-    process_intervals = {r.interval_minutes for r in process_eff.rules if r.enabled}
-    extra = sorted(
-        {r.interval_minutes for r in effective.rules if r.enabled} - process_intervals
-    )
-    if extra:
-        raise HTTPException(
-            status_code=422,
-            detail=[
-                f"interval(s) {extra} min introduced at scope "
-                f"{overlay.scope.process}/{overlay.scope.eqp_model}/{overlay.scope.eqp_id} "
-                f"are not scheduled (cadence is overridable only at the process "
-                f"level — SCHEMA §6.4); add them to the (process,*,*) profile first"
-            ],
         )
 
 
